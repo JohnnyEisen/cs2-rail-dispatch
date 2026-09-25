@@ -43,5 +43,8 @@ namespace RailCapacityGuard.Runtime
 
         /// <summary>本段起点帧（= 实际写入的发车帧），用于算"本段剩余帧"。</summary>
         public uint LegStartFrame;
+
+        /// <summary>连续多少个 tick 没被判定为"在站台"（闩锁用；≥8 才解除本站计划）。</summary>
+        public int NotAtStopTicks;
     }
 }
