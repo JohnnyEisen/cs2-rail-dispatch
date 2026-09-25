@@ -289,8 +289,9 @@ public class TimetableDispatchSystem : GameSystemBase
 				value5 = default(VehicleSchedule);
 			}
 			uint num9;
-			if (flag2 || (value5.AtStop && num5 < 0.5f))   // 闩锁：停住时保持；一旦开动就解除（避免被原版放走后仍显示待发）
+			if (flag2)   // 在站台
 			{
+				value5.NotAtStopTicks = 0;
 				if (!value5.AtStop)
 				{
 					float num6 = 0.5f * fpm;
@@ -342,9 +343,15 @@ public class TimetableDispatchSystem : GameSystemBase
 				}
 				num9 = value5.PlannedDepartFrame;
 			}
+			else if (value5.AtStop && ++value5.NotAtStopTicks < 8)
+			{
+				// 闩锁：连续 8 个 tick（64 帧）都拿不到站台才解除，避免速度抖动导致重锁/图定“即刻”闪烁
+				num9 = value5.PlannedDepartFrame;
+			}
 			else
 			{
 				value5.AtStop = false;
+				value5.NotAtStopTicks = 0;
 				num9 = now;
 			}
 			// 本段剩余帧（空间层 ETA 用）；未知 = -1
@@ -357,6 +364,11 @@ public class TimetableDispatchSystem : GameSystemBase
 				{
 					legEta = 0f;
 				}
+			}
+			else if (value3 >= 0.5f * fpm)
+			{
+				// 本段估计缺失（未读到或自检失败）→ 用线路中位数作为近似剩余量，避免 ETA=0/“即将到达”误报
+				legEta = value3;
 			}
 
 			// tooltip 第 2 行数据源：本车本段估计（没读到则用线路中位数）
@@ -396,7 +408,7 @@ public class TimetableDispatchSystem : GameSystemBase
 				else
 				{
 					m_VehicleSchedule[vehicle] = value5;
-					RecordTooltipInfo(line, vehicle, value, num9, target, now, DepartureDecision.NoData, VehicleStateKind.Boarding, etaOut, num5, "[0] boarding in progress -> 不干预 (" + reason + ")");
+					RecordTooltipInfo(line, vehicle, value, num9, target, now, DepartureDecision.NoData, VehicleStateKind.Boarding, etaOut, num5, "[0] boarding in progress -> 不干预 (" + reason + ")", num11, num10);
 				}
 				continue;
 			}
@@ -675,7 +687,7 @@ public class TimetableDispatchSystem : GameSystemBase
 		return m_TooltipInfo.TryGetValue(vehicle, out info);
 	}
 
-	private void RecordTooltipInfo(Entity line, Entity vehicle, LineRuntimeState state, uint planned, uint target, uint now, DepartureDecision decision, VehicleStateKind kind, float etaFrames, float speed, string reason)
+	private void RecordTooltipInfo(Entity line, Entity vehicle, LineRuntimeState state, uint planned, uint target, uint now, DepartureDecision decision, VehicleStateKind kind, float etaFrames, float speed, string reason, float dwellFrames = -1f, float boardingCapFrames = -1f)
 	{
 		if (m_TooltipInfo.Count > 1024)
 		{
@@ -692,6 +704,8 @@ public class TimetableDispatchSystem : GameSystemBase
 			SegmentRunFrames = state.SegmentRunFrames,
 			EtaFrames = etaFrames,
 			Speed = speed,
+			DwellFrames = dwellFrames,
+			BoardingCapFrames = boardingCapFrames,
 			Held = (decision == DepartureDecision.Hold),
 			Reason = reason
 		};

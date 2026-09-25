@@ -212,10 +212,13 @@ namespace RailCapacityGuard
             }
             else if (info.Kind == VehicleStateKind.Running || info.Kind == VehicleStateKind.StoppedEnRoute)
             {
-                m_LineWhen.value = LocalizedString.Value(etaMeaningful
-                    ? "下一站：预计 " + ClockOf(info, info.NowFrame + (uint)info.EtaFrames, fpm)
-                        + "（约 " + (info.EtaFrames / fpm).ToString("F1") + " 分钟后）"
-                    : "下一站：即将到达");
+                m_LineWhen.value = LocalizedString.Value(info.EtaFrames < 0f
+                    // ETA 完全未知（本段估计缺失）→ 不谎报"即将到达"
+                    ? "下一站：未知（运行中）"
+                    : etaMeaningful
+                        ? "下一站：预计 " + ClockOf(info, info.NowFrame + (uint)info.EtaFrames, fpm)
+                            + "（约 " + (info.EtaFrames / fpm).ToString("F1") + " 分钟后）"
+                        : "下一站：即将到达");
             }
             else
             {
@@ -269,9 +272,23 @@ namespace RailCapacityGuard
                     color = TooltipColor.Warning;
                     break;
                 case VehicleStateKind.Boarding:
-                    state = "上下客中（等待，原版处理）";
-                    color = TooltipColor.Info;
+                {
+                    // boarding 不是黑盒：已停站多久 + 兜底还有多久（数据来自 dispatch 快照的 StopEnterFrame 与 MaxBoardingMinutes）
+                    float dwellMin = info.DwellFrames >= 0f ? info.DwellFrames / fpm : 0f;
+                    float capMin = info.BoardingCapFrames > 0f ? info.BoardingCapFrames / fpm : 180f;
+                    float remainMin = capMin - dwellMin;
+                    if (remainMin <= capMin * 0.1f)
+                    {
+                        state = "上下客中 · 已停站 " + dwellMin.ToString("F1") + " 分钟 · 兜底即将触发（" + remainMin.ToString("F1") + " 分钟后强制发车）";
+                        color = TooltipColor.Warning;
+                    }
+                    else
+                    {
+                        state = "上下客中 · 已停站 " + dwellMin.ToString("F1") + " 分钟 · 兜底 " + remainMin.ToString("F1") + " 分钟后";
+                        color = TooltipColor.Info;
+                    }
                     break;
+                }
                 case VehicleStateKind.ScheduleUnknown:
                     state = "未参与调度 · 站间运行未测出（交回原版）";
                     color = TooltipColor.Info;

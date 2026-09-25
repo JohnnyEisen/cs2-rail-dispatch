@@ -52,6 +52,12 @@ namespace RailCapacityGuard.Runtime
         /// <summary>本车速度（m/s，来自 Game.Vehicles.TrainNavigation.m_Speed）；-1 = 读不到（问题二：区分在跑与停住）。</summary>
         public float  Speed;
 
+        /// <summary>boarding 期间已停站帧数（now − StopEnterFrame）；-1 = 未知。</summary>
+        public float  DwellFrames;
+
+        /// <summary>停站硬上限（帧，来自 MaxBoardingMinutes）；-1 = 未知。</summary>
+        public float  BoardingCapFrames;
+
         /// <summary>本 tick 是否被按住（时间层/空间层/咽喉区）。</summary>
         public bool   Held;
 
