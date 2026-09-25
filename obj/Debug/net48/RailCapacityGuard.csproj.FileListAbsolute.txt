@@ -1,0 +1,11 @@
+E:\DSH\CS2\Rail Capacity Guard\bin\Debug\net48\RailCapacityGuard.dll
+E:\DSH\CS2\Rail Capacity Guard\bin\Debug\net48\RailCapacityGuard.pdb
+E:\DSH\CS2\Rail Capacity Guard\bin\Debug\net48\0Harmony.dll
+E:\DSH\CS2\Rail Capacity Guard\obj\Debug\net48\RailCapacityGuard.csproj.AssemblyReference.cache
+E:\DSH\CS2\Rail Capacity Guard\obj\Debug\net48\RailCapacityGuard.GeneratedMSBuildEditorConfig.editorconfig
+E:\DSH\CS2\Rail Capacity Guard\obj\Debug\net48\RailCapacityGuard.AssemblyInfoInputs.cache
+E:\DSH\CS2\Rail Capacity Guard\obj\Debug\net48\RailCapacityGuard.AssemblyInfo.cs
+E:\DSH\CS2\Rail Capacity Guard\obj\Debug\net48\RailCapacityGuard.csproj.CoreCompileInputs.cache
+E:\DSH\CS2\Rail Capacity Guard\obj\Debug\net48\RailCapa.D0FEEDD3.Up2Date
+E:\DSH\CS2\Rail Capacity Guard\obj\Debug\net48\RailCapacityGuard.dll
+E:\DSH\CS2\Rail Capacity Guard\obj\Debug\net48\RailCapacityGuard.pdb

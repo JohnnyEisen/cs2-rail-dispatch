@@ -1,0 +1,9 @@
+{
+    "id": "RailCapacityGuard",
+    "displayName": "Rail Capacity Guard",
+    "author": "DSH",
+    "version": "0.0.1",
+    "description": "Rail Capacity Guard UI probe (V7/V9 hello-world)",
+    "isCodeMod": true,
+    "dependencies": []
+}
