@@ -1,0 +1,5 @@
+bin/
+obj/
+UI/node_modules/
+UI/dist/
+*.user
