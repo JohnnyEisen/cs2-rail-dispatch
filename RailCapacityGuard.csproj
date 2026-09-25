@@ -1,0 +1,178 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Rail Capacity Guard — Cities: Skylines II Mod
+    参照物（内部先例，非官方模板）：
+      E:\github文件\Traffic Law Enforcement\Traffic Law Enforcement.csproj
+
+    不导入官方模组工具链（D:\Steam\...\.ModdingToolchain\Mod.props / Mod.targets）：
+      * Mod.targets:106 DeployWIP 会 RemoveDir $(LocalModsPath)\$(TargetName)
+      * Mod.props:34  LocalModsPath 默认取用户环境变量 CSII_LOCALMODSPATH（本机为空）
+        → 不带 -p:LocalModsPath 构建时 DeployDir 会退化成盘根路径，有误删风险
+    因此部署一律手动拷贝 DLL，见交付说明。
+
+    构建：
+      dotnet build "Rail Capacity Guard.csproj" -c Debug -p:LocalModsPath=E:\DSH\CS2\_deploytest
+  -->
+  <PropertyGroup>
+    <GameManagedDir Condition="'$(GameManagedDir)' == ''">D:\Steam\steamapps\common\Cities Skylines II\Cities2_Data\Managed</GameManagedDir>
+    <LocalModsPath Condition="'$(LocalModsPath)' == ''">E:\DSH\CS2\_deploytest</LocalModsPath>
+
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Configurations>Debug;Release</Configurations>
+    <AssemblyName>RailCapacityGuard</AssemblyName>
+    <RootNamespace>RailCapacityGuard</RootNamespace>
+    <Version>0.1.0</Version>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+    <Product>Rail Capacity Guard</Product>
+
+    <!-- 镜像官方 CSII ModdingToolchain 的做法：关闭隐式框架引用，
+         显式引用游戏自带的 span-capable mscorlib / System.*，
+         否则 Unity.Entities 使用 ReadOnlySpan 的 API 编译期无法解析。 -->
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 游戏程序集一律 Private=false：绝不允许被拷进 Mods 目录 -->
+    <Reference Include="Game">
+      <HintPath>$(GameManagedDir)\Game.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Colossal.Core">
+      <HintPath>$(GameManagedDir)\Colossal.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Colossal.Logging">
+      <HintPath>$(GameManagedDir)\Colossal.Logging.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Colossal.Mathematics">
+      <HintPath>$(GameManagedDir)\Colossal.Mathematics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- V7/V9 UI 探针：C# 侧绑定类型所在程序集（P8 面板会用到；当前 bundle 不依赖 C# 绑定） -->
+    <Reference Include="Colossal.UI.Binding">
+      <HintPath>$(GameManagedDir)\Colossal.UI.Binding.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Settings UI：FileLocation / AssetDatabase（Colossal.IO.AssetDatabase）与 LocalizationManager（Colossal.Localization） -->
+    <Reference Include="Colossal.IO.AssetDatabase">
+      <HintPath>$(GameManagedDir)\Colossal.IO.AssetDatabase.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Colossal.Localization">
+      <HintPath>$(GameManagedDir)\Colossal.Localization.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Unity.Collections 的 NativeArray<T> 在 UnityEngine.CoreModule 中定义（CS0012 验证），
+         缺它无法使用 EntityQuery.ToEntityArray(NativeArray)。 -->
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(GameManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Entities">
+      <HintPath>$(GameManagedDir)\Unity.Entities.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Mathematics">
+      <HintPath>$(GameManagedDir)\Unity.Mathematics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Collections">
+      <HintPath>$(GameManagedDir)\Unity.Collections.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Burst">
+      <HintPath>$(GameManagedDir)\Unity.Burst.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="mscorlib">
+      <HintPath>$(GameManagedDir)\mscorlib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System">
+      <HintPath>$(GameManagedDir)\System.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Core">
+      <HintPath>$(GameManagedDir)\System.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="netstandard">
+      <HintPath>$(GameManagedDir)\netstandard.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Runtime">
+      <HintPath>$(GameManagedDir)\System.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Memory">
+      <HintPath>$(GameManagedDir)\System.Memory.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Runtime.CompilerServices.Unsafe">
+      <HintPath>$(GameManagedDir)\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Numerics">
+      <HintPath>$(GameManagedDir)\System.Numerics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!--
+      自动部署目标目录（CS2 本地 mod 目录）。
+      设计：源码与 bin/obj 全部留在源码树内，Mods 目录**只放 3 个可加载文件**，
+      避免游戏递归扫描 mod 子目录时重复加载同一个程序集。
+      可用 -p:ModDeployDir=... 覆盖。
+    -->
+    <ModDeployDir Condition="'$(ModDeployDir)' == ''">C:\Users\20122\AppData\LocalLow\Colossal Order\Cities Skylines II\Mods\RailCapacityGuard</ModDeployDir>
+  </PropertyGroup>
+
+  <!-- 构建后自动部署（等价于 PostBuildEvent，用 MSBuild 任务避免含空格路径的 cmd 引号问题） -->
+  <Target Name="DeployToGameMods" AfterTargets="Build">
+    <MakeDir Directories="$(ModDeployDir)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModDeployDir)" />
+    <Copy SourceFiles="$(TargetDir)$(TargetName).pdb" DestinationFolder="$(ModDeployDir)" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+    <Copy SourceFiles="$(TargetDir)0Harmony.dll" DestinationFolder="$(ModDeployDir)" Condition="Exists('$(TargetDir)0Harmony.dll')" />
+    <Message Importance="high" Text="[RailCapacityGuard] $(Configuration) -> $(TargetFileName) deployed to $(ModDeployDir)" />
+  </Target>
+
+  <PropertyGroup>
+    <!--
+      UI bundle：本地构建到 UI/build，再由下面的目标复制到 mod 目录。
+      不依赖 CSII_USERDATAPATH（本机未设置），也不写进 mod 根之外的位置。
+    -->
+    <UIBuildDir>$(MSBuildThisFileDirectory)UI</UIBuildDir>
+    <UIBundleName>RailCapacityGuard.mjs</UIBundleName>
+  </PropertyGroup>
+
+  <!-- 跑 npm run build。ContinueOnError：没有 node/npm 时也不能拖垮 C# 构建 -->
+  <Target Name="BuildUIBundle" AfterTargets="Build" Condition="Exists('$(UIBuildDir)\package.json')">
+    <Exec Command="npm run build" WorkingDirectory="$(UIBuildDir)" ContinueOnError="true" />
+  </Target>
+
+  <!-- 复制 bundle：mod 根（社区约定 &lt;id&gt;.js + mod.json）+ UI 子目录（本项目结构） -->
+  <Target Name="DeployUIBundle" AfterTargets="BuildUIBundle">
+    <ItemGroup>
+      <UIBundleFile Include="$(UIBuildDir)\build\$(UIBundleName)" Condition="Exists('$(UIBuildDir)\build\$(UIBundleName)')" />
+      <UIManifestFile Include="$(UIBuildDir)\mod.json" Condition="Exists('$(UIBuildDir)\mod.json')" />
+    </ItemGroup>
+    <MakeDir Directories="$(ModDeployDir);$(ModDeployDir)\UI" />
+    <Copy SourceFiles="@(UIBundleFile)" DestinationFolder="$(ModDeployDir)" Condition="'@(UIBundleFile)' != ''" />
+    <Copy SourceFiles="@(UIManifestFile)" DestinationFolder="$(ModDeployDir)" Condition="'@(UIManifestFile)' != ''" />
+    <Copy SourceFiles="@(UIBundleFile)" DestinationFolder="$(ModDeployDir)\UI" Condition="'@(UIBundleFile)' != ''" />
+    <Copy SourceFiles="@(UIManifestFile)" DestinationFolder="$(ModDeployDir)\UI" Condition="'@(UIManifestFile)' != ''" />
+    <Message Importance="high" Text="[RailCapacityGuard] UI bundle deployed to $(ModDeployDir) (root + UI\)" Condition="'@(UIBundleFile)' != ''" />
+  </Target>
+
+</Project>
