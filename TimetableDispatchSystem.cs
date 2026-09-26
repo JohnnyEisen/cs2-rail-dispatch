@@ -396,19 +396,25 @@ public class TimetableDispatchSystem : GameSystemBase
 				}
 				num9 = value5.PlannedDepartFrame;
 			}
-			else if (value5.AtStop && value5.PlannedDepartFrame <= now && num5 >= 0.5f)
+			else if (value5.AtStop && num5 >= 0.5f)
 			{
-				// 计划时刻已过且已在移动 = 真的走了 → 记“真实离开帧”（下一站图定链的基准）
+				// 权威在站信号（Boarding ∥ BoardingVehicle）已断 **且车在动** = 真的走了。
+				// 不再要求 planned 已过：车头一离站 boarding 就结束，若此时 planned 还在未来，
+				// 旧逻辑会落进 8 tick 闩锁 → tooltip 先“未知”再弹回“图定”，车尾离站再弹一次。
 				value5.LastDepartFrame = now;
 				if (value5.StopEnterFrame != 0u && now > value5.StopEnterFrame)
 				{
 					value5.LastDwellFrames = Math.Min((float)(now - value5.StopEnterFrame), 1800f);
 				}
+				if (value5.LegStartFrame == 0u)
+				{
+					value5.LegStartFrame = now;   // 本段实时测算起点（顺带消灭 legSkip）
+				}
 				value5.AtStop = false;
 				value5.NotAtStopTicks = 0;
 				num9 = now;
 			}
-			else if (value5.AtStop && ++value5.NotAtStopTicks < 8)
+			else if (value5.AtStop && num5 < 0.5f && ++value5.NotAtStopTicks < 8)
 			{
 				// 闩锁：连续 8 个 tick（64 帧）都拿不到站台才解除，避免速度抖动导致重锁/图定“即刻”闪烁
 				num9 = value5.PlannedDepartFrame;
