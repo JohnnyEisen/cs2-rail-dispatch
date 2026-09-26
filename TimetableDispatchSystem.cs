@@ -418,6 +418,7 @@ public class TimetableDispatchSystem : GameSystemBase
 				if (value5.LegStartFrame == 0u)
 				{
 					value5.LegStartFrame = now;   // 本段实时测算起点（顺带消灭 legSkip）
+					AnchorLegProgress(em, vehicle, ref value5, now);   // 第二十一条：位置乘数锚定
 				}
 				value5.AtStop = false;
 				value5.NotAtStopTicks = 0;
@@ -434,9 +435,19 @@ public class TimetableDispatchSystem : GameSystemBase
 				value5.NotAtStopTicks = 0;
 				num9 = now;
 			}
-			// 本段剩余帧（空间层 ETA / tooltip）：① 本段估计 − 已跑 ② 线路真实 leg 中位数 ③ VehicleTiming ④ 线路段中位数
+			// 第二十一条：区间位置测定（位置乘数）——运行中的车每 tick 读一次 PathOwner/PathElement/navLen
+			if (!flag2)
+			{
+				UpdateLegProgress(em, vehicle, ref value5, now);
+			}
+
+			// 本段剩余帧（空间层 ETA / tooltip）：① (1−Progress)×本段估计 ② 本段估计 − 已跑 ③ 线路真实 leg 中位数 ④ VehicleTiming ⑤ 线路段中位数
 			float legEta = -1f;
-			if (value5.LegEstimateOk && value5.LegEstimateFrames >= 0.5f * fpm)
+			if (value5.LegProgressValid && value5.LegProgress >= 0f && value5.LegEstimateOk && value5.LegEstimateFrames >= 0.5f * fpm)
+			{
+				legEta = (1f - value5.LegProgress) * value5.LegEstimateFrames;   // 位置乘数（第二十一条）
+			}
+			if (legEta < 0f && value5.LegEstimateOk && value5.LegEstimateFrames >= 0.5f * fpm)
 			{
 				float legElapsed = (value5.LegStartFrame != 0u && now > value5.LegStartFrame) ? (float)(now - value5.LegStartFrame) : 0f;
 				legEta = value5.LegEstimateFrames - legElapsed;
@@ -548,6 +559,7 @@ public class TimetableDispatchSystem : GameSystemBase
 						{
 							// B 诊断：boarding 期放行是 at-stop Depart 的主要命中点
 							value5.LegStartFrame = now;
+							AnchorLegProgress(em, vehicle, ref value5, now);
 							ModLog.Verbose("[P7] legStart vehicle=" + vehicle.Index + " line=" + line.Index + " frame=" + now + " src=boarding-depart");
 						}
 					}
@@ -662,6 +674,7 @@ public class TimetableDispatchSystem : GameSystemBase
 			{
 				// 只记本段起点（真实发车时刻）；估计值来自线路级来源，不再读车辆 m_Duration
 				value5.LegStartFrame = now;
+				AnchorLegProgress(em, vehicle, ref value5, now);
 				ModLog.Verbose("[P7] legStart vehicle=" + vehicle.Index + " line=" + line.Index + " frame=" + now + " src=main-depart");
 			}
 			
@@ -1027,6 +1040,101 @@ public class TimetableDispatchSystem : GameSystemBase
 	///（归档 _analysis/vanilla_research/README.md §3）；TT 同用法 TimetableDispatchSystem.cs:956-963。
 	/// 只遍历本线路的 RouteWaypoint（≤32），不遍历全城。
 	/// </summary>
+	/// <summary>
+	/// 第二十一条：读本车路径位置读数（O(1)；不枚举前方车道、不累加 Curve.m_Length）。
+	/// elementCount = PathElement buffer 长度（原版随行进 RemoveRange 裁剪 → 递减）；
+	/// navLen = TrainNavigationLane.Length（原版维护的前方剩余车道数，0 = 到终点）。
+	/// </summary>
+	private void ReadPathCounts(EntityManager em, Entity vehicle, out int elementCount, out int navLen)
+	{
+		elementCount = 0;
+		navLen = 0;
+		if (em.HasBuffer<PathElement>(vehicle))
+		{
+			elementCount = em.GetBuffer<PathElement>(vehicle, true).Length;
+		}
+		if (em.HasBuffer<TrainNavigationLane>(vehicle))
+		{
+			navLen = em.GetBuffer<TrainNavigationLane>(vehicle, true).Length;
+		}
+	}
+
+	/// <summary>发车锚定：记录本段路径元素总数（分母），Progress 归零。</summary>
+	private void AnchorLegProgress(EntityManager em, Entity vehicle, ref VehicleSchedule schedule, uint now)
+	{
+		int elementCount;
+		int navLen;
+		ReadPathCounts(em, vehicle, out elementCount, out navLen);
+		schedule.LegStartElementCount = elementCount;
+		schedule.LegStartNavLen = navLen;
+		schedule.LastElementCount = elementCount;
+		schedule.LastNavLen = navLen;
+		schedule.LegProgress = 0f;
+		schedule.LegProgressValid = (elementCount > 0 || navLen > 1);
+		schedule.ProgressLoggedDecile = -1;
+	}
+
+	/// <summary>
+	/// 每 tick 更新本段 Progress（仅在车辆已离站/运行中调用）。
+	/// 边界1：buffer 重新分配（重寻路）→ 重新锚定，避免 progress 倒退或为负。
+	/// 边界2：cnt 与 navLen 归零（到终点 / 外连离图）→ Progress=1、停止 ETA，交回原版。
+	/// </summary>
+	private void UpdateLegProgress(EntityManager em, Entity vehicle, ref VehicleSchedule schedule, uint now)
+	{
+		if (!schedule.LegProgressValid)
+		{
+			return;
+		}
+
+		int elementCount;
+		int navLen;
+		ReadPathCounts(em, vehicle, out elementCount, out navLen);
+
+		if (schedule.LastElementCount > 0 && elementCount > schedule.LastElementCount)
+		{
+			AnchorLegProgress(em, vehicle, ref schedule, now);
+			ModLog.Verbose("[P7] pos reanchor vehicle=" + vehicle.Index + " cnt=" + elementCount + " (buffer grew)");
+			return;
+		}
+
+		if (elementCount <= 0 && navLen <= 0)
+		{
+			schedule.LegProgress = 1f;
+			schedule.LegProgressValid = false;
+			return;
+		}
+
+		schedule.LastElementCount = elementCount;
+		schedule.LastNavLen = navLen;
+		float progress = -1f;
+		if (schedule.LegStartElementCount > 0 && elementCount > 0)
+		{
+			progress = (float)(schedule.LegStartElementCount - elementCount) / (float)schedule.LegStartElementCount;
+		}
+		else if (schedule.LegStartNavLen > 1 && navLen > 0)
+		{
+			progress = (float)(schedule.LegStartNavLen - navLen) / (float)(schedule.LegStartNavLen - 1);
+		}
+		if (progress < 0f)
+		{
+			return;
+		}
+		if (progress > 1f)
+		{
+			progress = 1f;
+		}
+		if (progress > schedule.LegProgress)
+		{
+			schedule.LegProgress = progress;   // 单调不减
+		}
+
+		int decile = (int)(schedule.LegProgress * 10f);
+		if (decile != schedule.ProgressLoggedDecile)
+		{
+			schedule.ProgressLoggedDecile = decile;
+			ModLog.Verbose("[P7] pos vehicle=" + vehicle.Index + " startCnt=" + schedule.LegStartElementCount + " cnt=" + elementCount + " navLen=" + navLen + " p=" + (schedule.LegProgress * 100f).ToString("F0") + "%");
+		}
+	}
 	private bool IsBoardingAtLineStop(EntityManager em, Entity line, Entity vehicle)
 	{
 		if (line == Entity.Null || !em.Exists(line) || !em.HasBuffer<Game.Routes.RouteWaypoint>(line))

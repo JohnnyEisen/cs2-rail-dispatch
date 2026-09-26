@@ -46,5 +46,27 @@ namespace RailCapacityGuard.Runtime
 
         /// <summary>连续多少个 tick 没被判定为"在站台"（闩锁用；≥8 才解除本站计划）。</summary>
         public int NotAtStopTicks;
+    // ── 第二十一条 区间位置测定（位置乘数）──────────────────────────────
+
+    /// <summary>本段 Progress（0~1）；-1 = 无效。</summary>
+    public float LegProgress;
+
+    /// <summary>发车锚定时的 PathElement buffer 长度（本段路径元素总数）。</summary>
+    public int LegStartElementCount;
+
+    /// <summary>发车锚定时的 TrainNavigationLane.Length（PathElement 不可用时的分母）。</summary>
+    public int LegStartNavLen;
+
+    /// <summary>上一 tick 读到的 PathElement buffer 长度（检测重寻路导致的 buffer 重新分配）。</summary>
+    public int LastElementCount;
+
+    /// <summary>上一 tick 读到的 TrainNavigationLane.Length（前方剩余车道数；诊断与兜底）。</summary>
+    public int LastNavLen;
+
+    /// <summary>位置乘数是否可用（false → 严格走时间减法降级）。</summary>
+    public bool LegProgressValid;
+
+    /// <summary>已上报过的 progress 十分位（0~10），把 pos 日志限制在每段 ≤11 条。</summary>
+    public int ProgressLoggedDecile;
     }
 }
