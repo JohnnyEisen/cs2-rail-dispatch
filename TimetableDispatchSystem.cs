@@ -335,18 +335,22 @@ public class TimetableDispatchSystem : GameSystemBase
 				{
 					float num6 = 0.5f * fpm;
 
-					// 自检：上一段的 估计 vs 实际（实际 = 本站进站帧 − 上一站发车帧），比值越界即判不可信
-					if (value5.LegEstimateFrames > 0f && value5.LegStartFrame != 0u && now > value5.LegStartFrame)
+					// 真实 leg 入库：只要知道本段真实起点就记（ring 是唯一可信来源，不能被估计有效性/自检挡住）
+					if (value5.LegStartFrame != 0u && now > value5.LegStartFrame)
 					{
 						float numActual = (float)(now - value5.LegStartFrame);
-						float numRatio = (numActual > 0f) ? (value5.LegEstimateFrames / numActual) : 0f;
-						if (numRatio < 0.5f || numRatio > 2.0f)
-						{
-							ModLog.Warn("[P7] leg sanity vehicle=" + vehicle.Index + " estimate=" + value5.LegEstimateFrames.ToString("F0") + " actual=" + numActual.ToString("F0") + " ratio=" + numRatio.ToString("F2"));
-							value5.LegEstimateOk = false;
-						}
-
 						m_SegmentTime.RecordLeg(line, numActual);
+
+						// 自检只负责告警（估计 vs 实际）
+						if (value5.LegEstimateFrames > 0f)
+						{
+							float numRatio = (numActual > 0f) ? (value5.LegEstimateFrames / numActual) : 0f;
+							if (numRatio < 0.5f || numRatio > 2.0f)
+							{
+								ModLog.Warn("[P7] leg sanity vehicle=" + vehicle.Index + " estimate=" + value5.LegEstimateFrames.ToString("F0") + " actual=" + numActual.ToString("F0") + " ratio=" + numRatio.ToString("F2"));
+								value5.LegEstimateOk = false;
+							}
+						}
 					}
 
 					// 本段完成 → 允许下次发车重新读一次估计
@@ -372,6 +376,7 @@ public class TimetableDispatchSystem : GameSystemBase
 					value5.PlannedDepartFrame = (value5.ScheduleUnknown ? now : (num8 + (uint)(num7 + value5.LastDwellFrames)));
 					value5.AtStop = true;
 					value5.StopEnterFrame = now;
+					ModLog.Verbose("[P7] legSrc line=" + line.Index + " ring=" + m_SegmentTime.GetLineSampleCount(line) + " median=" + m_SegmentTime.GetLineMedian(line).ToString("F0") + " used=" + num7.ToString("F0"));
 					ModLog.Verbose("[P7] schedule locked vehicle=" + vehicle.Index + " base=" + num8 + " leg=" + num7.ToString("F0") + " dwell=" + value5.LastDwellFrames.ToString("F0") + " planned=" + value5.PlannedDepartFrame);
 				}
 				num9 = value5.PlannedDepartFrame;
