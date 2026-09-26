@@ -283,7 +283,9 @@ public class TimetableDispatchSystem : GameSystemBase
 				ModLog.Verbose("[P7] stripped AbandonRoute (at platform) vehicle=" + vehicle.Index);
 			}
 			float num5 = (em.HasComponent<TrainNavigation>(vehicle) ? em.GetComponentData<TrainNavigation>(vehicle).m_Speed : (-1f));
-			bool flag2 = m_Resolver.TryGetCurrentStationLane(em, vehicle, out var _) || (componentData2.m_State & PublicTransportFlags.Boarding) != 0;
+			bool flag2 = (componentData2.m_State & PublicTransportFlags.Boarding) != 0
+				|| IsBoardingAtLineStop(em, line, vehicle)
+				|| m_Resolver.TryGetCurrentStationLane(em, vehicle, out var _);   // 原版权威信号优先（TransportBoardingHelpers: BeginBoarding 设 BoardingVehicle / EndBoarding 清）
 			if (!m_VehicleSchedule.TryGetValue(vehicle, out var value5))
 			{
 				value5 = default(VehicleSchedule);
@@ -375,7 +377,22 @@ public class TimetableDispatchSystem : GameSystemBase
 
 			// 本段剩余帧（空间层 ETA 用）；未知 = -1
 			float legEta = -1f;
-			if (value5.LegEstimateOk && value5.LegEstimateFrames >= 0.5f * fpm)
+			// 运行中的车：直接用本车「当前剩余路程时长」——PathInformation.m_Duration 就是它
+			//（route units；探针实测 + TT 的 × UnitMinutes 口径）。这是原版自己维护的值，不会陈旧。
+			if (!flag2 && em.HasComponent<PathInformation>(vehicle))
+			{
+				float liveUnits = em.GetComponentData<PathInformation>(vehicle).m_Duration;
+				if (liveUnits >= 0.5f && unitMinutes > 0f && fpm > 0f)
+				{
+					float liveFrames = UnitConversion.UnitsToFrames(liveUnits, unitMinutes, fpm);
+					if (liveFrames >= 0.5f * fpm)
+					{
+						legEta = liveFrames;
+						value.SegmentRunFrames = liveFrames;
+					}
+				}
+			}
+			if (legEta < 0f && value5.LegEstimateOk && value5.LegEstimateFrames >= 0.5f * fpm)
 			{
 				float legElapsed = (value5.LegStartFrame != 0u && now > value5.LegStartFrame) ? (float)(now - value5.LegStartFrame) : 0f;
 				legEta = value5.LegEstimateFrames - legElapsed;
@@ -384,9 +401,9 @@ public class TimetableDispatchSystem : GameSystemBase
 					legEta = 0f;
 				}
 			}
-			else if (value3 >= 0.5f * fpm)
+			if (legEta < 0f && value3 >= 0.5f * fpm)
 			{
-				// 本段估计缺失（未读到或自检失败）→ 用线路中位数作为近似剩余量，避免 ETA=0/“即将到达”误报
+				// 都缺失 → 线路中位数兜底，避免 ETA=0/“即将到达”误报
 				legEta = value3;
 			}
 
@@ -913,6 +930,38 @@ public class TimetableDispatchSystem : GameSystemBase
 		m_TerminusLogged.Clear();
 		m_SegmentUnknownLogged.Clear();
 		m_UnknownBlockerHolds.Clear();
+	}
+
+	/// <summary>
+	/// 原版权威“正在本站登车”判定：站台实体上的 Game.Routes.BoardingVehicle.m_Vehicle == 本车。
+	/// 依据：反编译 TransportBoardingHelpers —— BeginBoarding 设 BoardingVehicle、EndBoarding 清它并清车辆 Boarding 位
+	///（归档 _analysis/vanilla_research/README.md §3）；TT 同用法 TimetableDispatchSystem.cs:956-963。
+	/// 只遍历本线路的 RouteWaypoint（≤32），不遍历全城。
+	/// </summary>
+	private bool IsBoardingAtLineStop(EntityManager em, Entity line, Entity vehicle)
+	{
+		if (line == Entity.Null || !em.Exists(line) || !em.HasBuffer<Game.Routes.RouteWaypoint>(line))
+		{
+			return false;
+		}
+
+		DynamicBuffer<Game.Routes.RouteWaypoint> waypoints = em.GetBuffer<Game.Routes.RouteWaypoint>(line, true);
+		int count = waypoints.Length > 32 ? 32 : waypoints.Length;
+		for (int i = 0; i < count; i++)
+		{
+			Entity stop = waypoints[i].m_Waypoint;
+			if (stop == Entity.Null || !em.Exists(stop) || !em.HasComponent<Game.Routes.BoardingVehicle>(stop))
+			{
+				continue;
+			}
+
+			if (em.GetComponentData<Game.Routes.BoardingVehicle>(stop).m_Vehicle == vehicle)
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private bool IsManagedVehicle(EntityManager em, Entity vehicle)
