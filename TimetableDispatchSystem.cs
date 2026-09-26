@@ -385,7 +385,12 @@ public class TimetableDispatchSystem : GameSystemBase
 			}
 			else if (value5.AtStop && value5.PlannedDepartFrame <= now && num5 >= 0.5f)
 			{
-				// 计划时刻已过且已在移动 = 真的走了（原版 boarding 位可能比我们的发车判定晚清）
+				// 计划时刻已过且已在移动 = 真的走了 → 记“真实离开帧”（下一站图定链的基准）
+				value5.LastDepartFrame = now;
+				if (value5.StopEnterFrame != 0u && now > value5.StopEnterFrame)
+				{
+					value5.LastDwellFrames = Math.Min((float)(now - value5.StopEnterFrame), 1800f);
+				}
 				value5.AtStop = false;
 				value5.NotAtStopTicks = 0;
 				num9 = now;
@@ -604,17 +609,7 @@ public class TimetableDispatchSystem : GameSystemBase
 			{
 				value.LastWrittenDepartureFrame = now;
 
-				// 关键：target 现在是「图定时刻」（可能是未来值），不能当实际发车帧用！
-				// 只有原版放弃点（writeFrame + 1800）已过，才算真正离开本站。
-				if (writeFrame + 1800u <= now)
-				{
-					value5.LastDepartFrame = now;   // 实际离开帧 → 下一站图定的基准
-					if (value5.StopEnterFrame != 0u && now > value5.StopEnterFrame)
-					{
-						value5.LastDwellFrames = Math.Min((float)(now - value5.StopEnterFrame), (float)maxDwellFrames);   // 夹取，避免异常值污染图定链
-					}
-					value5.AtStop = false;   // 真离开 → 清站点闩锁，下次到站重新锁定
-				}
+				// 实际离开帧与闩锁解除统一在“观察到真的走了”那一支处理（上方 latch 分支），避免重复记录
 
 				if (early)
 				{
@@ -697,9 +692,10 @@ public class TimetableDispatchSystem : GameSystemBase
 		CapacityVerdict capacityVerdict = m_Capacity.QueryArrival(em, lane2, vehicle, now, num2, s.SafetyMarginFrames);
 		if (capacityVerdict.Confidence == Confidence.Unavailable)
 		{
-			kind = VehicleStateKind.DataUnavailable;
-			reason = "[2] verdict unavailable (" + capacityVerdict.Reason.ToString() + ") platform=" + lane2.Index + " eta=" + num2.ToString("F0") + " source=" + source + " -> NoData";
-			return DepartureDecision.NoData;
+			// 判定不可用（常因占用者不是公交车辆/离开帧未知）⇒ 视为空闲继续走后面的检查，
+			// 而不是整辆车退出空间层（旧行为 = P2/P3/区间全部跳过，实测 noData 占大头）
+			ModLog.Verbose("[P7] verdict unavailable (" + capacityVerdict.Reason.ToString() + ") platform=" + lane2.Index + " -> treat as free");
+			capacityVerdict.Blocker = Entity.Null;
 		}
 		if (IsUpcomingSegmentBusy(em, vehicle, num2, now))
 		{
@@ -888,25 +884,14 @@ public class TimetableDispatchSystem : GameSystemBase
 			{
 				continue;
 			}
-			m_UnknownBlockerHolds.TryGetValue(vehicle, out var value);
-			if (!flag && value >= 8)
-			{
-				m_UnknownBlockerHolds.Remove(vehicle);
-				ModLog.Verbose("[P7] segment busy (unknown blocker) bounded release vehicle=" + vehicle.Index + " blocker=" + blocker.Index + " holds=" + value + " lane=" + lane.Index);
-				continue;
-			}
+			// 占用者的离开时间未知（非公交车辆 / m_DepartureFrame=0）⇒ 无法推理，**不按住**：
+			// 交给原版闭塞（我们只对“能算出它什么时候走”的占用者做提前量判断）。
 			if (!flag)
 			{
-				m_UnknownBlockerHolds[vehicle] = value + 1;
+				continue;
 			}
-			else
-			{
-				m_UnknownBlockerHolds.Remove(vehicle);
-			}
-			if (value == 0)
-			{
-				ModLog.Verbose("[P7] Hold: segment busy vehicle=" + vehicle.Index + " blocker=" + blocker.Index + " eta=" + num2.ToString("F0") + " occFreeIn=" + (flag ? num3.ToString("F0") : "unknown") + " lane=" + lane.Index);
-			}
+			m_UnknownBlockerHolds.Remove(vehicle);
+			ModLog.Verbose("[P7] Hold: segment busy vehicle=" + vehicle.Index + " blocker=" + blocker.Index + " eta=" + num2.ToString("F0") + " occFreeIn=" + num3.ToString("F0") + " lane=" + lane.Index);
 			return true;
 		}
 		return false;
