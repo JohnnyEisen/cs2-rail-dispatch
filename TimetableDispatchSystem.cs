@@ -374,7 +374,16 @@ public class TimetableDispatchSystem : GameSystemBase
 					{
 						num7 = m_SegmentTime.GetLineMedian(line);
 					}
-					// ③ 线路段 PathInformation 的中位数（冷启动兜底）
+					// ③ 原版 VehicleTiming.m_AverageTravelTime 中位数（每站 BeginBoarding 都在刷新）
+					if (num7 < num6)
+					{
+						float numVt;
+						if (m_SegmentTime.TryGetLineVehicleTimingMedian(em, line, num6, out numVt))
+						{
+							num7 = numVt;
+						}
+					}
+					// ④ 线路段 PathInformation 的中位数（最后兜底）
 					if (num7 < num6)
 					{
 						float numMedian;
@@ -425,7 +434,7 @@ public class TimetableDispatchSystem : GameSystemBase
 				value5.NotAtStopTicks = 0;
 				num9 = now;
 			}
-			// 本段剩余帧（空间层 ETA / tooltip）：① 本段估计 − 已跑 ② 线路真实 leg 中位数 ③ 线路段中位数
+			// 本段剩余帧（空间层 ETA / tooltip）：① 本段估计 − 已跑 ② 线路真实 leg 中位数 ③ VehicleTiming ④ 线路段中位数
 			float legEta = -1f;
 			if (value5.LegEstimateOk && value5.LegEstimateFrames >= 0.5f * fpm)
 			{
@@ -440,6 +449,16 @@ public class TimetableDispatchSystem : GameSystemBase
 			{
 				legEta = value3;   // 线路真实 leg 中位数兜底
 			}
+			// ③ 原版 per-waypoint 平均行程（VehicleTiming.m_AverageTravelTime，每站刷新）
+			if (legEta < 0f)
+			{
+				float numVtEta;
+				if (m_SegmentTime.TryGetLineVehicleTimingMedian(em, line, 0.5f * fpm, out numVtEta))
+				{
+					legEta = numVtEta;
+				}
+			}
+			// ④ 线路段中位数（最后兜底）
 			if (legEta < 0f)
 			{
 				float numMedianEta;
