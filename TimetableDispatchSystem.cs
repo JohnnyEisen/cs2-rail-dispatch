@@ -343,6 +343,13 @@ public class TimetableDispatchSystem : GameSystemBase
 				}
 				num9 = value5.PlannedDepartFrame;
 			}
+			else if (value5.AtStop && value5.PlannedDepartFrame <= now && num5 >= 0.5f)
+			{
+				// 计划时刻已过且已在移动 = 真的走了（原版 boarding 位可能比我们的发车判定晚清）
+				value5.AtStop = false;
+				value5.NotAtStopTicks = 0;
+				num9 = now;
+			}
 			else if (value5.AtStop && ++value5.NotAtStopTicks < 8)
 			{
 				// 闩锁：连续 8 个 tick（64 帧）都拿不到站台才解除，避免速度抖动导致重锁/图定“即刻”闪烁
@@ -354,6 +361,18 @@ public class TimetableDispatchSystem : GameSystemBase
 				value5.NotAtStopTicks = 0;
 				num9 = now;
 			}
+			// 已离站但本段估计缺失（例：boarding 位比发车判定晚清，发车时的读取没跑到）→ 立即补读一次
+			if (!flag2 && (value5.LegEstimateFrames <= 0f || value5.LegStartFrame == 0u))
+			{
+				float legNow;
+				if (m_SegmentTime.TryReadVehicleLegFrames(em, vehicle, unitMinutes, fpm, 0.5f * fpm, out legNow))
+				{
+					value5.LegEstimateFrames = legNow;
+					value5.LegEstimateOk = true;
+					value5.LegStartFrame = now;
+				}
+			}
+
 			// 本段剩余帧（空间层 ETA 用）；未知 = -1
 			float legEta = -1f;
 			if (value5.LegEstimateOk && value5.LegEstimateFrames >= 0.5f * fpm)
