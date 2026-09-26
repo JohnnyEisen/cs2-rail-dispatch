@@ -7,15 +7,15 @@ using RailCapacityGuard.Utils;
 namespace RailCapacityGuard.Services
 {
     /// <summary>
-    /// 站间运行时间服务（P7 时间层数据源，2026-09-25 实测后定稿）。
+    /// 站间运行时间服务（P7 时间层数据源，2026-09-26 反编译后修订）。
     ///
-    ///   主源：车辆 Game.Pathfind.PathInformation.m_Duration（route units，dump 已核实字段），
-    ///         **每段读一次**（我们真正写发车帧那一刻）；实测证明该值停站期间恒定、跨车辆同 dest 一致。
-    ///   单位：frames = units × UnitMinutes × FramesPerMinute
-    ///         （TT ScheduleMath.cs:176 × UnitMinutes；TimebaseSystem.cs:32-33  1 unit = 60 帧）。
-    ///   回退：① 本线最近 kRing 段"真实 leg"（发车帧→下一站进站帧）的中位数
-    ///         ② Σ RouteSegment.m_Duration ÷ 段数（TT HourlyFleetSystem.cs:202-235 同口径）
-    ///         ③ 0 = 未测出（调用方走"待定/交回原版"）
+    ///   主源：本线最近 kRing 段"真实 leg"（发车帧→下一站进站帧）的中位数（ring 只装实测）。
+    ///   回退：本线 RouteSegment.m_Duration 的**中位数**（RoutePathReadySystem 证实为 per-segment
+    ///         单段结果；均值已被 D3 实测否证——折返/绕路等离群段把 Σ÷n 抬高 3–10×）。
+    ///   车辆自身 PathInformation.m_Duration 已证伪弃用：反编译证实它是寻路完成时写入的
+    ///         整条路径静态快照（PathfindJobs.CreatePath Σ边长/边限速；ProcessResultsJob 一次性写），
+    ///         既不是剩余时长也不是本段，且不随行进递减。
+    ///   单位：frames = units × UnitMinutes × FramesPerMinute（1 route unit = 60 帧）。
     /// 纯托管、不进存档、不做 Burst。
     /// </summary>
     public sealed class SegmentTimeService
@@ -30,6 +30,7 @@ namespace RailCapacityGuard.Services
         private readonly Dictionary<Entity, float> m_MeanLeg = new Dictionary<Entity, float>(64);
         private readonly Dictionary<Entity, uint> m_MeanFrame = new Dictionary<Entity, uint>(64);
         private readonly float[] m_Scratch = new float[kRing];
+        private readonly float[] m_SegmentScratch = new float[kMaxSegments];
 
         public void Clear()
         {
@@ -38,25 +39,6 @@ namespace RailCapacityGuard.Services
             m_Head.Clear();
             m_MeanLeg.Clear();
             m_MeanFrame.Clear();
-        }
-
-        /// <summary>主源：读车辆当前 m_Duration（route units → 帧）。不可用或小于下限返回 false。</summary>
-        public bool TryReadVehicleLegFrames(EntityManager em, Entity vehicle, float unitMinutes, float fpm, float minFrames, out float frames)
-        {
-            frames = 0f;
-            if (unitMinutes <= 0f || fpm <= 0f || !em.HasComponent<PathInformation>(vehicle))
-            {
-                return false;
-            }
-
-            float units = em.GetComponentData<PathInformation>(vehicle).m_Duration;
-            if (units < kMinDurationUnits)
-            {
-                return false;
-            }
-
-            frames = UnitConversion.UnitsToFrames(units, unitMinutes, fpm);
-            return frames >= minFrames;
         }
 
         /// <summary>记录一条"真实 leg"（发车帧 → 下一站进站帧），用于回退 ①。</summary>
@@ -124,10 +106,12 @@ namespace RailCapacityGuard.Services
         }
 
         /// <summary>
-        /// 回退 ②：Σ RouteSegment.m_Duration ÷ 段数（TT HourlyFleetSystem.cs:202-235 同口径）。
+        /// 回退 ②：本线 RouteSegment.m_Duration 的**中位数**（不再是均值——D3 实测均值被
+        /// 折返/绕路等离群段抬高 3–10×；RoutePathReadySystem 证实 segment PathInformation 为
+        /// per-segment 单段结果，故中位数可直接用作 leg 量级估计）。
         /// 每 256 帧最多重算一次/线路（懒加载，常态零开销）。
         /// </summary>
-        public bool TryGetLineMeanLegFrames(EntityManager em, Entity line, float unitMinutes, float fpm, float minFrames, uint now, out float frames)
+        public bool TryGetLineMedianLegFrames(EntityManager em, Entity line, float unitMinutes, float fpm, float minFrames, uint now, out float frames)
         {
             frames = 0f;
             float cached;
@@ -151,7 +135,6 @@ namespace RailCapacityGuard.Services
                 return false;
             }
 
-            float total = 0f;
             int used = 0;
             for (int i = 0; i < count; i++)
             {
@@ -161,16 +144,34 @@ namespace RailCapacityGuard.Services
                     continue;
                 }
 
-                total += em.GetComponentData<PathInformation>(segment).m_Duration;
-                used++;
+                float units = em.GetComponentData<PathInformation>(segment).m_Duration;
+                if (units < kMinDurationUnits)
+                {
+                    continue;   // 失败/异常段（如 -1）不参与
+                }
+
+                m_SegmentScratch[used++] = units;
             }
 
-            if (used <= 0 || total <= 0f)
+            if (used <= 0)
             {
                 return false;
             }
 
-            frames = UnitConversion.UnitsToFrames(total / used, unitMinutes, fpm);
+            // 插入排序（used ≤ 256，每线每 256 帧一次，开销可忽略）
+            for (int i = 1; i < used; i++)
+            {
+                float key = m_SegmentScratch[i];
+                int j = i - 1;
+                while (j >= 0 && m_SegmentScratch[j] > key)
+                {
+                    m_SegmentScratch[j + 1] = m_SegmentScratch[j];
+                    j--;
+                }
+                m_SegmentScratch[j + 1] = key;
+            }
+
+            frames = UnitConversion.UnitsToFrames(m_SegmentScratch[used / 2], unitMinutes, fpm);
             m_MeanLeg[line] = frames;
             m_MeanFrame[line] = now;
             return frames >= minFrames;

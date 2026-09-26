@@ -259,15 +259,15 @@ public class TimetableDispatchSystem : GameSystemBase
 		TransportLine componentData = em.GetComponentData<TransportLine>(line);
 		float num = ((componentData.m_VehicleInterval > 0.01f) ? componentData.m_VehicleInterval : 5f);
 		float num2 = UnitConversion.UnitsToMinutes(num, unitMinutes);
-		// 站间运行时间：主源 = 每辆车自己的 PathInformation.m_Duration（发车时读一次，见下）。
-		// 这里只取线路中位数，作为回退 ① / 诊断值。
+		// 站间运行时间：主源 = 本线实测 leg 中位数（ring，只装真实 leg）；回退 = 线路段 PathInformation 中位数。
+		// 车辆自身 PathInformation.m_Duration 已证伪（寻路完成时写入的整条路径静态快照），读取已全删。
 		float value3 = m_SegmentTime.GetLineMedian(line);
 		int value2 = (value3 > 0f) ? 1 : 0;
 		value.SegmentRunFrames = value3;
 		value.MinHeadwayFrames = Math.Max(8f, s.MinHeadwayMinutes * fpm);
 		if (value3 <= 0f && m_SegmentUnknownLogged.Add(line))
 		{
-			ModLog.Info("[P7] line=" + line.Index + " segment run unknown: leg=none(该车本 tick 无上一段样本) lineEma=" + value2 + " samples(<" + 2 + " 或 <" + (0.5f * fpm).ToString("F0") + "f) fallback=m_Duration(需 ≥" + 0.5f + " unit) -> 本站图定待定，交回原版");
+			ModLog.Info("[P7] line=" + line.Index + " segment run unknown: leg=none(该车本 tick 无上一段样本) lineEma=" + value2 + " samples(<" + 2 + " 或 <" + (0.5f * fpm).ToString("F0") + "f) fallback=segment median(需 ≥" + 0.5f + " unit) -> 本站图定待定，交回原版");
 		}
 		value.MaxEarlyFrames = value3 * ((float)s.MaxEarlyPercent / 100f);
 		if (!m_LastHeadwayLogged.TryGetValue(line, out var value4) || Math.Abs(value4 - value3) > 0.5f)
@@ -352,20 +352,26 @@ public class TimetableDispatchSystem : GameSystemBase
 							}
 						}
 					}
+					else if (value5.LegStartFrame == 0u)
+					{
+						// B 诊断：进站转换时无 leg 起点 ⇒ 两个 legStart setter（boarding 写入段 / 主写入段）都未命中过本车
+						ModLog.Verbose("[P7] legSkip vehicle=" + vehicle.Index + " line=" + line.Index + " reason=LegStartFrame=0 (进站转换但无 leg 起点)");
+					}
 
 					// 本段完成 → 允许下次发车重新读一次估计
 					value5.LegStartFrame = 0u;
 
 					// 本段估计：车辆自身 PathInformation.m_Duration 已弃用（反编译证实＝寻路完成时写入的
 					// “整条路径静态快照”，既不是剩余时长也不是本段）。改为：
-					//   ① 本线真实 leg 中位数（ring 只装真实 leg）  ② Σ RouteSegment.m_Duration ÷ 段数（TT 同口径）
+					//   ① 本线真实 leg 中位数（ring 只装真实 leg）  ② 线路段 PathInformation 中位数
+					//     （均值已被 D3 实测否证：折返/绕路等离群段把 Σ÷n 抬高 3–10×）
 					float num7 = m_SegmentTime.GetLineMedian(line);
 					if (num7 < num6)
 					{
-						float numMean;
-						if (m_SegmentTime.TryGetLineMeanLegFrames(em, line, unitMinutes, fpm, num6, now, out numMean))
+						float numMedian;
+						if (m_SegmentTime.TryGetLineMedianLegFrames(em, line, unitMinutes, fpm, num6, now, out numMedian))
 						{
-							num7 = numMean;
+							num7 = numMedian;
 						}
 					}
 					value5.LegEstimateFrames = ((num7 >= num6) ? num7 : 0f);
@@ -404,7 +410,7 @@ public class TimetableDispatchSystem : GameSystemBase
 				value5.NotAtStopTicks = 0;
 				num9 = now;
 			}
-			// 本段剩余帧（空间层 ETA / tooltip）：① 本段估计 − 已跑 ② 线路真实 leg 中位数 ③ 线路几何均值
+			// 本段剩余帧（空间层 ETA / tooltip）：① 本段估计 − 已跑 ② 线路真实 leg 中位数 ③ 线路段中位数
 			float legEta = -1f;
 			if (value5.LegEstimateOk && value5.LegEstimateFrames >= 0.5f * fpm)
 			{
@@ -421,10 +427,10 @@ public class TimetableDispatchSystem : GameSystemBase
 			}
 			if (legEta < 0f)
 			{
-				float numMeanEta;
-				if (m_SegmentTime.TryGetLineMeanLegFrames(em, line, unitMinutes, fpm, 0.5f * fpm, now, out numMeanEta))
+				float numMedianEta;
+				if (m_SegmentTime.TryGetLineMedianLegFrames(em, line, unitMinutes, fpm, 0.5f * fpm, now, out numMedianEta))
 				{
-					legEta = numMeanEta;   // 几何均值兜底
+					legEta = numMedianEta;   // 线路段中位数兜底
 				}
 			}
 
@@ -464,8 +470,55 @@ public class TimetableDispatchSystem : GameSystemBase
 				}
 				else
 				{
+					// A: boarding 期间照常执行时刻表写入（TT TimetableDispatchSystem.cs:1728-1740：
+					// vanilla StopBoarding 只在 boarding 期间读 m_DepartureFrame，且 StartBoarding 每 tick
+					// 会膨胀该字段。此前 continue 跳过写入 ⇒ Hold 不生效、vanilla 早于 planned 放行、
+					// at-stop Depart 不可达 ⇒ LegStartFrame 恒 0 ⇒ ring 断供）。
+					if (departureDecision == DepartureDecision.NoData && value5.AtStop && !value5.ScheduleUnknown)
+					{
+						departureDecision = ((now < num9) ? DepartureDecision.Hold : DepartureDecision.Depart);
+					}
+					if (departureDecision == DepartureDecision.Hold || departureDecision == DepartureDecision.Depart)
+					{
+						uint writeFrameB;
+						if (departureDecision == DepartureDecision.Hold)
+						{
+							uint num12b = Math.Max(num9, now + (uint)s.PostponeStepFrames);
+							if (target < num12b)
+							{
+								target = num12b;
+							}
+							writeFrameB = target;
+						}
+						else
+						{
+							uint num12b = (uint)Math.Min(1800f, ((s.MaxBoardingMinutes > 0f) ? s.MaxBoardingMinutes : 180f) * fpm);
+							long num13b = (long)target + (long)num12b - 1800L;
+							writeFrameB = ((num13b > 1L) ? (uint)num13b : 1u);
+							if (writeFrameB > now)
+							{
+								writeFrameB = now;
+							}
+						}
+						bool needWriteB = ((departureDecision == DepartureDecision.Hold)
+							? (componentData2.m_DepartureFrame != writeFrameB)
+							: (componentData2.m_DepartureFrame > writeFrameB));   // release 只下调，绝不上调（TT:1777）
+						if (needWriteB)
+						{
+							componentData2.m_DepartureFrame = writeFrameB;
+							em.SetComponentData<VehiclePublicTransport>(vehicle, componentData2);
+							LastWriteCount++;
+							m_WindowWrites++;
+						}
+						if (departureDecision == DepartureDecision.Depart && value5.LegStartFrame == 0u)
+						{
+							// B 诊断：boarding 期放行是 at-stop Depart 的主要命中点
+							value5.LegStartFrame = now;
+							ModLog.Verbose("[P7] legStart vehicle=" + vehicle.Index + " line=" + line.Index + " frame=" + now + " src=boarding-depart");
+						}
+					}
 					m_VehicleSchedule[vehicle] = value5;
-					RecordTooltipInfo(line, vehicle, value, num9, target, now, DepartureDecision.NoData, VehicleStateKind.Boarding, etaOut, num5, "[0] boarding in progress -> 不干预 (" + reason + ")", num11, num10);
+					RecordTooltipInfo(line, vehicle, value, num9, target, now, departureDecision, VehicleStateKind.Boarding, etaOut, num5, "[0] boarding write (" + departureDecision + ") dwell=" + num11 + "f (" + reason + ")", num11, num10);
 				}
 				continue;
 			}
@@ -575,8 +628,9 @@ public class TimetableDispatchSystem : GameSystemBase
 			{
 				// 只记本段起点（真实发车时刻）；估计值来自线路级来源，不再读车辆 m_Duration
 				value5.LegStartFrame = now;
+				ModLog.Verbose("[P7] legStart vehicle=" + vehicle.Index + " line=" + line.Index + " frame=" + now + " src=main-depart");
 			}
-
+			
 			if (departureDecision == DepartureDecision.Depart)
 			{
 				value.LastWrittenDepartureFrame = now;
