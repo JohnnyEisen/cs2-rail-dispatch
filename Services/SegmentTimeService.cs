@@ -30,6 +30,7 @@ namespace RailCapacityGuard.Services
         private readonly Dictionary<Entity, float> m_MeanLeg = new Dictionary<Entity, float>(64);
         private readonly Dictionary<Entity, uint> m_MeanFrame = new Dictionary<Entity, uint>(64);
         private readonly float[] m_Scratch = new float[kRing];
+        private readonly float[] m_ScratchWide = new float[kMaxSegments];
         private readonly float[] m_SegmentScratch = new float[kMaxSegments];
 
         public void Clear()
@@ -105,6 +106,60 @@ namespace RailCapacityGuard.Services
             return m_Scratch[count / 2];
         }
 
+        /// <summary>
+        /// 数据源（原版自维护，上客期间也在刷新）：本线各 waypoint 上
+        /// Game.Routes.VehicleTiming.m_AverageTravelTime 的中位数。
+        /// 依据（反编译）：TransportBoardingHelpers 每次 BeginBoarding 调
+        /// RouteUtils.UpdateAverageTravelTime(m_AverageTravelTime, departureFrame, simulationFrame)
+        /// ⇒ 单位为 sim 帧，按 waypoint 记录「从发车到本站」的平均行程时间。
+        /// 用途：独立于我们自身测算的兜底/交叉校验，消除读不到数据导致的未知。
+        /// </summary>
+        public bool TryGetLineVehicleTimingMedian(EntityManager em, Entity line, float minFrames, out float frames)
+        {
+                frames = 0f;
+                if (line == Entity.Null || !em.Exists(line) || !em.HasBuffer<Game.Routes.RouteWaypoint>(line))
+                {
+                        return false;
+                }
+
+                DynamicBuffer<Game.Routes.RouteWaypoint> waypoints = em.GetBuffer<Game.Routes.RouteWaypoint>(line, true);
+                int count = waypoints.Length > kMaxSegments ? kMaxSegments : waypoints.Length;
+                int used = 0;
+                for (int i = 0; i < count; i++)
+                {
+                        Entity wp = waypoints[i].m_Waypoint;
+                        if (wp == Entity.Null || !em.Exists(wp) || !em.HasComponent<Game.Routes.VehicleTiming>(wp))
+                        {
+                                continue;
+                        }
+
+                        float value = em.GetComponentData<Game.Routes.VehicleTiming>(wp).m_AverageTravelTime;
+                        if (value >= minFrames)
+                        {
+                                m_ScratchWide[used++] = value;
+                        }
+                }
+
+                if (used <= 0)
+                {
+                        return false;
+                }
+
+                for (int i = 1; i < used; i++)
+                {
+                        float key = m_ScratchWide[i];
+                        int j = i - 1;
+                        while (j >= 0 && m_ScratchWide[j] > key)
+                        {
+                                m_ScratchWide[j + 1] = m_ScratchWide[j];
+                                j--;
+                        }
+                        m_ScratchWide[j + 1] = key;
+                }
+
+                frames = m_ScratchWide[used / 2];
+                return frames >= minFrames;
+        }
         /// <summary>
         /// 回退 ②：本线 RouteSegment.m_Duration 的**中位数**（不再是均值——D3 实测均值被
         /// 折返/绕路等离群段抬高 3–10×；RoutePathReadySystem 证实 segment PathInformation 为
