@@ -405,7 +405,7 @@ public class TimetableDispatchSystem : GameSystemBase
 			if (!flag2 && (value5.LegEstimateFrames <= 0f || value5.LegStartFrame == 0u))
 			{
 				float legNow;
-				if (m_SegmentTime.TryReadVehicleLegFrames(em, vehicle, unitMinutes, fpm, 0.5f * fpm, out legNow))
+				if (m_SegmentTime.TryReadVehicleLegFrames(em, vehicle, unitMinutes, fpm, 8f, out legNow))
 				{
 					value5.LegEstimateFrames = legNow;
 					value5.LegEstimateOk = true;
@@ -423,7 +423,7 @@ public class TimetableDispatchSystem : GameSystemBase
 				if (liveUnits >= 0.5f && unitMinutes > 0f && fpm > 0f)
 				{
 					float liveFrames = UnitConversion.UnitsToFrames(liveUnits, unitMinutes, fpm);
-					if (liveFrames >= 0.5f * fpm)
+					if (liveFrames >= 8f)   // 实时剩余时长：只要不是 0 就可信（很短 → 工具提示自然显示“即将到达”）
 					{
 						legEta = liveFrames;
 						value.SegmentRunFrames = liveFrames;
@@ -689,15 +689,11 @@ public class TimetableDispatchSystem : GameSystemBase
 			reason = "[2] platform " + lane2.Index + " has no LaneReservation -> NoData";
 			return DepartureDecision.NoData;
 		}
-		// 空间层 ETA = 本段剩余帧（来自每段一次读到的 m_Duration）；未知 = -1 → 不碰
-		float num2 = (etaOut = legEtaFrames);
-		string source = "leg";   // 旧 ETA 来源字段（现固定为 leg）
-		if (num2 < 0f)
-		{
-			kind = VehicleStateKind.DataUnavailable;
-			reason = "[2] leg ETA unavailable (no m_Duration / sanity failed) -> NoData";
-			return DepartureDecision.NoData;
-		}
+		// 空间层 ETA：已知用真实剩余帧；未知 → 按 0 处理（保守=立即到站：站台忙就待避），
+		// 但显示仍报 -1（“下一站：未知”）。绝不再因为一个数字缺失就退出整个空间层。
+		float num2 = (legEtaFrames >= 0f) ? legEtaFrames : 0f;
+		etaOut = (legEtaFrames >= 0f) ? legEtaFrames : -1f;
+		string source = "leg";
 		CapacityVerdict capacityVerdict = m_Capacity.QueryArrival(em, lane2, vehicle, now, num2, s.SafetyMarginFrames);
 		if (capacityVerdict.Confidence == Confidence.Unavailable)
 		{
