@@ -352,27 +352,20 @@ public class TimetableDispatchSystem : GameSystemBase
 					// 本段完成 → 允许下次发车重新读一次估计
 					value5.LegStartFrame = 0u;
 
-					float num7 = ((value5.LegEstimateOk && value5.LegEstimateFrames >= num6) ? value5.LegEstimateFrames : value3);
+					// 本段估计：车辆自身 PathInformation.m_Duration 已弃用（反编译证实＝寻路完成时写入的
+					// “整条路径静态快照”，既不是剩余时长也不是本段）。改为：
+					//   ① 本线真实 leg 中位数（ring 只装真实 leg）  ② Σ RouteSegment.m_Duration ÷ 段数（TT 同口径）
+					float num7 = m_SegmentTime.GetLineMedian(line);
 					if (num7 < num6)
 					{
-						// 站点现场读一次（实测：停站期间 m_Duration 稳定，等于本段运行时间）
-						float numHere;
-						if (m_SegmentTime.TryReadVehicleLegFrames(em, vehicle, unitMinutes, fpm, num6, out numHere))
+						float numMean;
+						if (m_SegmentTime.TryGetLineMeanLegFrames(em, line, unitMinutes, fpm, num6, now, out numMean))
 						{
-							num7 = numHere;
-							value5.LegEstimateFrames = numHere;
-							value5.LegEstimateOk = true;
-							m_SegmentTime.RecordLeg(line, numHere);   // 站点读到的是完整本段 → 入 ring（冷启动也能快速得到中位数）
-						}
-						else
-						{
-							float numMean;
-							if (m_SegmentTime.TryGetLineMeanLegFrames(em, line, unitMinutes, fpm, num6, now, out numMean))
-							{
-								num7 = numMean;
-							}
+							num7 = numMean;
 						}
 					}
+					value5.LegEstimateFrames = ((num7 >= num6) ? num7 : 0f);
+					value5.LegEstimateOk = (value5.LegEstimateFrames > 0f);
 
 					uint num8 = ((value5.LastDepartFrame != 0) ? value5.LastDepartFrame : now);
 					value5.ScheduleUnknown = num7 < num6;
@@ -406,36 +399,9 @@ public class TimetableDispatchSystem : GameSystemBase
 				value5.NotAtStopTicks = 0;
 				num9 = now;
 			}
-			// 已离站但本段估计缺失（例：boarding 位比发车判定晚清，发车时的读取没跑到）→ 立即补读一次
-			if (!flag2 && (value5.LegEstimateFrames <= 0f || value5.LegStartFrame == 0u))
-			{
-				float legNow;
-				if (m_SegmentTime.TryReadVehicleLegFrames(em, vehicle, unitMinutes, fpm, 8f, out legNow))
-				{
-					value5.LegEstimateFrames = legNow;
-					value5.LegEstimateOk = true;
-					value5.LegStartFrame = now;
-				}
-			}
-
-			// 本段剩余帧（空间层 ETA 用）；未知 = -1
+			// 本段剩余帧（空间层 ETA / tooltip）：① 本段估计 − 已跑 ② 线路真实 leg 中位数 ③ 线路几何均值
 			float legEta = -1f;
-			// 运行中的车：直接用本车「当前剩余路程时长」——PathInformation.m_Duration 就是它
-			//（route units；探针实测 + TT 的 × UnitMinutes 口径）。这是原版自己维护的值，不会陈旧。
-			if (!flag2 && em.HasComponent<PathInformation>(vehicle))
-			{
-				float liveUnits = em.GetComponentData<PathInformation>(vehicle).m_Duration;
-				if (liveUnits >= 0.5f && unitMinutes > 0f && fpm > 0f)
-				{
-					float liveFrames = UnitConversion.UnitsToFrames(liveUnits, unitMinutes, fpm);
-					if (liveFrames >= 8f)   // 实时剩余时长：只要不是 0 就可信（很短 → 工具提示自然显示“即将到达”）
-					{
-						legEta = liveFrames;
-						value.SegmentRunFrames = liveFrames;
-					}
-				}
-			}
-			if (legEta < 0f && value5.LegEstimateOk && value5.LegEstimateFrames >= 0.5f * fpm)
+			if (value5.LegEstimateOk && value5.LegEstimateFrames >= 0.5f * fpm)
 			{
 				float legElapsed = (value5.LegStartFrame != 0u && now > value5.LegStartFrame) ? (float)(now - value5.LegStartFrame) : 0f;
 				legEta = value5.LegEstimateFrames - legElapsed;
@@ -446,8 +412,15 @@ public class TimetableDispatchSystem : GameSystemBase
 			}
 			if (legEta < 0f && value3 >= 0.5f * fpm)
 			{
-				// 都缺失 → 线路中位数兜底，避免 ETA=0/“即将到达”误报
-				legEta = value3;
+				legEta = value3;   // 线路真实 leg 中位数兜底
+			}
+			if (legEta < 0f)
+			{
+				float numMeanEta;
+				if (m_SegmentTime.TryGetLineMeanLegFrames(em, line, unitMinutes, fpm, 0.5f * fpm, now, out numMeanEta))
+				{
+					legEta = numMeanEta;   // 几何均值兜底
+				}
 			}
 
 			// tooltip 第 2 行数据源：本车本段估计（没读到则用线路中位数）
@@ -595,14 +568,8 @@ public class TimetableDispatchSystem : GameSystemBase
 			}
 			if (departureDecision == DepartureDecision.Depart && value5.LegStartFrame == 0u)
 			{
-				// 每段一次：本段估计（与是否写入组件无关，避免 alreadyReleased 时漏读）
+				// 只记本段起点（真实发车时刻）；估计值来自线路级来源，不再读车辆 m_Duration
 				value5.LegStartFrame = now;
-				float legFrames2;
-				if (m_SegmentTime.TryReadVehicleLegFrames(em, vehicle, unitMinutes, fpm, 0.5f * fpm, out legFrames2))
-				{
-					value5.LegEstimateFrames = legFrames2;
-					value5.LegEstimateOk = true;
-				}
 			}
 
 			if (departureDecision == DepartureDecision.Depart)
