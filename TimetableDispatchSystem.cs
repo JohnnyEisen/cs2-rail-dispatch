@@ -77,6 +77,12 @@ public class TimetableDispatchSystem : GameSystemBase
 
 	private readonly Dictionary<Entity, VehicleTooltipInfo> m_TooltipInfo = new Dictionary<Entity, VehicleTooltipInfo>(256);
 
+	// 主循环行缓存（避免每 8 帧分配 NativeArray）
+	private readonly List<Entity> m_CachedLines = new List<Entity>(64);
+	private int m_CachedLineCount = -1;
+	private uint m_LastTooltipPrune;
+	private readonly List<Entity> m_PruneScratch = new List<Entity>(64);
+
 	private const float kStoppedSpeedThreshold = 0.5f;
 
 	private const float kDefaultHoldCapFrames = 3600f;
@@ -190,20 +196,51 @@ public class TimetableDispatchSystem : GameSystemBase
 		{
 			return;
 		}
-		NativeArray<Entity> val = m_LineQuery.ToEntityArray(Allocator.Temp);
-		try
+		// 行数不变 ⇒ 复用缓存，避免每 8 帧一次 Temp 分配（行数变化时才重读一次 query）
+		int lineCountNow = m_LineQuery.CalculateEntityCount();
+		if (lineCountNow != m_CachedLineCount)
 		{
-			int num3 = (LastLineCount = Math.Min(val.Length, 64));
-			LastWriteCount = 0;
-			LastNoDataCount = 0;
-			for (int i = 0; i < num3; i++)
+			m_CachedLines.Clear();
+			NativeArray<Entity> fresh = m_LineQuery.ToEntityArray(Allocator.Temp);
+			try
 			{
-				ProcessLine(entityManager, settings, val[i], currentFrame, framesPerMinute, unitMinutes);
+				for (int i = 0; i < fresh.Length; i++)
+				{
+					m_CachedLines.Add(fresh[i]);
+				}
+			}
+			finally
+			{
+				fresh.Dispose();
+			}
+
+			m_CachedLineCount = lineCountNow;
+		}
+
+		// 每 4096 帧剪一次已消失车辆的 tooltip 快照
+		if (currentFrame - m_LastTooltipPrune >= 4096u)
+		{
+			m_LastTooltipPrune = currentFrame;
+			m_PruneScratch.Clear();
+			foreach (Entity key in m_TooltipInfo.Keys)
+			{
+				if (!entityManager.Exists(key))
+				{
+					m_PruneScratch.Add(key);
+				}
+			}
+			for (int k = 0; k < m_PruneScratch.Count; k++)
+			{
+				m_TooltipInfo.Remove(m_PruneScratch[k]);
 			}
 		}
-		finally
+
+		int num3 = (LastLineCount = Math.Min(m_CachedLines.Count, 64));
+		LastWriteCount = 0;
+		LastNoDataCount = 0;
+		for (int i = 0; i < num3; i++)
 		{
-			val.Dispose();
+			ProcessLine(entityManager, settings, m_CachedLines[i], currentFrame, framesPerMinute, unitMinutes);
 		}
 	}
 
@@ -325,6 +362,7 @@ public class TimetableDispatchSystem : GameSystemBase
 							num7 = numHere;
 							value5.LegEstimateFrames = numHere;
 							value5.LegEstimateOk = true;
+							m_SegmentTime.RecordLeg(line, numHere);   // 站点读到的是完整本段 → 入 ring（冷启动也能快速得到中位数）
 						}
 						else
 						{
@@ -573,7 +611,7 @@ public class TimetableDispatchSystem : GameSystemBase
 					value5.LastDepartFrame = now;   // 实际离开帧 → 下一站图定的基准
 					if (value5.StopEnterFrame != 0u && now > value5.StopEnterFrame)
 					{
-						value5.LastDwellFrames = (float)(now - value5.StopEnterFrame);
+						value5.LastDwellFrames = Math.Min((float)(now - value5.StopEnterFrame), (float)maxDwellFrames);   // 夹取，避免异常值污染图定链
 					}
 					value5.AtStop = false;   // 真离开 → 清站点闩锁，下次到站重新锁定
 				}
@@ -869,7 +907,10 @@ public class TimetableDispatchSystem : GameSystemBase
 			{
 				m_UnknownBlockerHolds.Remove(vehicle);
 			}
-			ModLog.Verbose("[P7] Hold: segment busy vehicle=" + vehicle.Index + " blocker=" + blocker.Index + " eta=" + num2.ToString("F0") + " occFreeIn=" + (flag ? num3.ToString("F0") : "unknown") + " holds=" + (value + 1) + " lane=" + lane.Index);
+			if (value == 0)
+			{
+				ModLog.Verbose("[P7] Hold: segment busy vehicle=" + vehicle.Index + " blocker=" + blocker.Index + " eta=" + num2.ToString("F0") + " occFreeIn=" + (flag ? num3.ToString("F0") : "unknown") + " lane=" + lane.Index);
+			}
 			return true;
 		}
 		return false;
