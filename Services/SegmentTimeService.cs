@@ -86,6 +86,13 @@ namespace RailCapacityGuard.Services
             }
         }
 
+        /// <summary>本线 ring 里已有的真实 leg 样本数（诊断用）。</summary>
+        public int GetLineSampleCount(Entity line)
+        {
+                int count;
+                return m_Count.TryGetValue(line, out count) ? count : 0;
+        }
+
         /// <summary>回退 ①：本线最近 kRing 段真实 leg 的中位数；样本不足返回 0。</summary>
         public float GetLineMedian(Entity line)
         {
