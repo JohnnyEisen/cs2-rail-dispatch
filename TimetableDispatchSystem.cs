@@ -82,6 +82,7 @@ public class TimetableDispatchSystem : GameSystemBase
 	private int m_CachedLineCount = -1;
 	private uint m_LastTooltipPrune;
 	private readonly List<Entity> m_PruneScratch = new List<Entity>(64);
+	private readonly HashSet<Entity> m_TreatAsFreeLogged = new HashSet<Entity>();
 
 	private const float kStoppedSpeedThreshold = 0.5f;
 
@@ -340,6 +341,7 @@ public class TimetableDispatchSystem : GameSystemBase
 					{
 						float numActual = (float)(now - value5.LegStartFrame);
 						m_SegmentTime.RecordLeg(line, numActual);
+						value5.LastLegFrames = numActual;   // 本车自己的实测 leg（下一段优先用它 → 图定不因线路中位数波动而跳）
 
 						// 自检只负责告警（估计 vs 实际）
 						if (value5.LegEstimateFrames > 0f)
@@ -365,7 +367,14 @@ public class TimetableDispatchSystem : GameSystemBase
 					// “整条路径静态快照”，既不是剩余时长也不是本段）。改为：
 					//   ① 本线真实 leg 中位数（ring 只装真实 leg）  ② 线路段 PathInformation 中位数
 					//     （均值已被 D3 实测否证：折返/绕路等离群段把 Σ÷n 抬高 3–10×）
-					float num7 = m_SegmentTime.GetLineMedian(line);
+					// ① 本车上一段实测 leg（首选：同一列车自己的时间尺度，最稳）
+					float num7 = (value5.LastLegFrames >= num6) ? value5.LastLegFrames : 0f;
+					// ② 线路真实 leg 中位数（需 ≥3 样本，1–2 个样本的中位数会随每一段跳变）
+					if (num7 < num6 && m_SegmentTime.GetLineSampleCount(line) >= 3)
+					{
+						num7 = m_SegmentTime.GetLineMedian(line);
+					}
+					// ③ 线路段 PathInformation 的中位数（冷启动兜底）
 					if (num7 < num6)
 					{
 						float numMedian;
@@ -720,7 +729,10 @@ public class TimetableDispatchSystem : GameSystemBase
 		{
 			// 判定不可用（常因占用者不是公交车辆/离开帧未知）⇒ 视为空闲继续走后面的检查，
 			// 而不是整辆车退出空间层（旧行为 = P2/P3/区间全部跳过，实测 noData 占大头）
-			ModLog.Verbose("[P7] verdict unavailable (" + capacityVerdict.Reason.ToString() + ") platform=" + lane2.Index + " -> treat as free");
+			if (m_TreatAsFreeLogged.Add(lane2))   // 每个站台每会话只记一条（实测一轮刷了 1106 条）
+			{
+				ModLog.Verbose("[P7] verdict unavailable (" + capacityVerdict.Reason.ToString() + ") platform=" + lane2.Index + " -> treat as free");
+			}
 			capacityVerdict.Blocker = Entity.Null;
 		}
 		if (IsUpcomingSegmentBusy(em, vehicle, num2, now))
