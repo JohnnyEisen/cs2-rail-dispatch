@@ -564,14 +564,18 @@ public class TimetableDispatchSystem : GameSystemBase
 
 			if (departureDecision == DepartureDecision.Depart)
 			{
-				value.LastWrittenDepartureFrame = target;
+				value.LastWrittenDepartureFrame = now;
 
-				// 记录本站真实发车帧 + 实测停站 → 下一站图定的基准（此前从未写入，base 永远是 now）
-				value5.LastDepartFrame = target;
-				value5.AtStop = false;   // 已发车 → 清除站点闩锁，下次到站重新锁定（图定不再滑动）
-				if (value5.StopEnterFrame != 0u && now > value5.StopEnterFrame)
+				// 关键：target 现在是「图定时刻」（可能是未来值），不能当实际发车帧用！
+				// 只有原版放弃点（writeFrame + 1800）已过，才算真正离开本站。
+				if (writeFrame + 1800u <= now)
 				{
-					value5.LastDwellFrames = (float)(now - value5.StopEnterFrame);
+					value5.LastDepartFrame = now;   // 实际离开帧 → 下一站图定的基准
+					if (value5.StopEnterFrame != 0u && now > value5.StopEnterFrame)
+					{
+						value5.LastDwellFrames = (float)(now - value5.StopEnterFrame);
+					}
+					value5.AtStop = false;   // 真离开 → 清站点闩锁，下次到站重新锁定
 				}
 
 				if (early)
