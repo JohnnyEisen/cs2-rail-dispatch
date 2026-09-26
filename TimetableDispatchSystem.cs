@@ -502,32 +502,36 @@ public class TimetableDispatchSystem : GameSystemBase
 				continue;
 			}
 			RecordTooltipInfo(line, vehicle, value, num9, target, now, departureDecision, kind, etaOut, num5, reason);
-			// hold 写放大修复：只有 Depart 且未放行（变化时写）/ Hold 且已存帧已到期（需要延长）才写
-			bool needWrite = (departureDecision == DepartureDecision.Depart)
-				? (componentData2.m_DepartureFrame > now && componentData2.m_DepartureFrame != target)
-				: (componentData2.m_DepartureFrame <= now && componentData2.m_DepartureFrame != target);
+			// ── 写 m_DepartureFrame：照搬 TT 现行语义（MIT；TT TimetableDispatchSystem.cs:1733 / :1770-1777）──
+			//   hold   ：每 tick 权威重写 target —— 原版 StartBoarding 每 tick 会膨胀该字段，不重写就被原版放走（TT:20-21、:588）
+			//   release：只「下调」到锚点 force = planned + maxDwell − 1800（且 ≤ now），
+			//            把原版 StopBoarding 的放弃点（frame >= m_DepartureFrame + 1800）锚定在「图定 + 最大停站」上：
+			//            · v0.2 的 frame-1 会保留两个登车守卫无上限 → 越走越晚（TT:1749-1751 已回滚）
+			//            · v0.2.3 的 frame-1800 会立刻清空守卫 → 把还在走来的乘客丢回站台（TT:1752-1755 已回滚）
+			uint maxDwellFrames = (uint)Math.Min(1800f, (s.MaxBoardingMinutes > 0f ? s.MaxBoardingMinutes : 180f) * fpm);
+			uint writeFrame;
+			if (departureDecision == DepartureDecision.Hold)
+			{
+				writeFrame = target;
+			}
+			else
+			{
+				long anchor = (long)target + (long)maxDwellFrames - 1800L;
+				writeFrame = anchor > 1L ? (uint)anchor : 1u;
+				if (writeFrame > now)
+				{
+					writeFrame = now;
+				}
+			}
+			bool needWrite = (departureDecision == DepartureDecision.Hold)
+				? (componentData2.m_DepartureFrame != writeFrame)
+				: (componentData2.m_DepartureFrame > writeFrame);   // release 只下调，绝不上调（TT:1777）
 			if (needWrite)
 			{
-				componentData2.m_DepartureFrame = target;
+				componentData2.m_DepartureFrame = writeFrame;
 				em.SetComponentData<VehiclePublicTransport>(vehicle, componentData2);
 				LastWriteCount++;
 				m_WindowWrites++;
-				if (departureDecision == DepartureDecision.Depart)
-				{
-					// 每段读一次（实测确认：此刻 m_Duration 稳定且量级正确）
-					value5.LegStartFrame = now;   // 真实发车时刻（target 是 now-1800 的放行值，不能当起点）
-					float legFrames;
-					if (m_SegmentTime.TryReadVehicleLegFrames(em, vehicle, unitMinutes, fpm, 0.5f * fpm, out legFrames))
-					{
-						value5.LegEstimateFrames = legFrames;
-						value5.LegEstimateOk = true;
-					}
-					else
-					{
-						value5.LegEstimateFrames = 0f;
-						value5.LegEstimateOk = false;
-					}
-				}
 			}
 			if (departureDecision == DepartureDecision.Depart && value5.LegStartFrame == 0u)
 			{
@@ -610,10 +614,10 @@ public class TimetableDispatchSystem : GameSystemBase
 		{
 			if (m_Resolver.TryGetCurrentStationLane(em, vehicle, out var _) || (pt.m_State & PublicTransportFlags.Boarding) != 0)
 			{
-				target = ReleaseFrame(now);
+				target = planned;   // 图定时刻本身；由写入侧锚定 maxDwell（见 TT:1770-1776）
 				bypassSlotFloor = true;
 				kind = VehicleStateKind.Releasing;
-				reason = "[2] at stop, no upcoming platform -> depart";
+				reason = "[2] at stop, no upcoming platform -> depart (anchored)";
 				return DepartureDecision.Depart;
 			}
 			kind = VehicleStateKind.Running;
@@ -663,7 +667,7 @@ public class TimetableDispatchSystem : GameSystemBase
 			bool flag2 = HasRearPressure(em, vehicles, vehicleCount, vehicle, lane2) && state.PostponeStreak * 8 >= s.PostponeStepFrames;
 			if (flag | flag2)
 			{
-				target = ReleaseFrame(now);
+				target = planned;
 				bypassSlotFloor = true;
 				kind = VehicleStateKind.Releasing;
 				reason = "[9] release " + (flag ? "(slot passed)" : "(rear pressure at A)") + " dev=" + num5.ToString("F0") + "f eta=" + num2.ToString("F0") + " occFree=" + num3.ToString("F0") + " slack=" + capacityVerdict.SlackFrames.ToString("F0") + " source=" + source;
@@ -686,18 +690,18 @@ public class TimetableDispatchSystem : GameSystemBase
 			uint num6 = (uint)Math.Max(now, (float)planned - state.MaxEarlyFrames);
 			if (now >= num6 && HasRearPressure(em, vehicles, vehicleCount, vehicle, lane2))
 			{
-				target = ReleaseFrame(now);
+				target = num6;   // 提前发车时刻
 				early = true;
 				bypassSlotFloor = true;
 				kind = VehicleStateKind.Releasing;
-				reason = "[4] rear pressure -> early depart target=now-1800 (planned=" + planned + ")";
+				reason = "[4] rear pressure -> early depart (planned=" + planned + ")";
 				return DepartureDecision.Depart;
 			}
 		}
-		target = ReleaseFrame(now);
+		target = planned;   // 正常到点放行：写图定时刻，由写入侧锚定 maxDwell（TT:1770-1776）
 		bypassSlotFloor = true;
 		kind = VehicleStateKind.Releasing;
-		reason = "[5] depart target=now-1800 (planned=" + planned + ")";
+		reason = "[5] depart (planned=" + planned + ")";
 		return DepartureDecision.Depart;
 	}
 
