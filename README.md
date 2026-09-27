@@ -95,7 +95,9 @@ UI/                         独立 UI 探针（webpack 构建，产物不进版�
 ## 已知问题与注意
 
 - **写入面**：只有 P7 发车帧、P4 寻路代价（默认关）、P8 限速探针（默认关）会写原版数据；其余全为只读。`EnableFleetAdaptation` 硬性关闭。
-- **调试环境内存**：16 GB 内存 + 大量 Mod + 529 Tiles 的存档会在**载图期**因系统虚拟内存耗尽而报 `Could not allocate memory: System out of memory!`（Windows 事件 `Microsoft-Windows-Resource-Exhaustion-Detector` 2004 记录 `Cities2.exe` 提交 11.4 GB commit，同刻 `dwm.exe` / `taskmgr.exe` 也因资源不足崩溃）。这是机器容量问题，不是本 Mod 逻辑问题——该崩溃会话中 `RailCapacityGuard.log` 仅 13 行，主循环未进入，P4 零写入。缓解：关闭常驻内存大户、固定更大的页面文件、减少地图类 Mod。
+- **内存需求（载图期）**：载入城市时游戏会同时申请地形 / 纹理 / 批处理材质，地图类 Mod（例如解锁全图的 529 Tiles）会把峰值成倍放大。**16 GB 内存 + 大量 Mod** 的组合容易在载图进度条阶段耗尽虚拟内存，表现为长时间卡死，或 `Player.log` 里出现 `Could not allocate memory: System out of memory!`（通常紧接 `ManagedBatchSystem:CreateMaterial -> TextureAsset:LoadData` 栈，即原生分配失败）。
+  - 排查：`Player.log` 搜 `Could not allocate memory`；事件查看器 → Windows 日志 → 系统 → 来源 `Microsoft-Windows-Resource-Exhaustion-Detector`（事件 2004）会列出占用虚拟内存最大的进程。
+  - 缓解（按性价比）：关闭常驻内存大户 → 页面文件改为固定且足够大 → 关闭 / 减少地图类 Mod、降低纹理质量 → 加内存到 32 GB。
 - **未实现**：Harmony 补丁（`Patches/` 为空，`Lib.Harmony` 仅为预留引用）、Paradox Mods 发布流程、车队自适应写入。
 
 ## 鸣谢
