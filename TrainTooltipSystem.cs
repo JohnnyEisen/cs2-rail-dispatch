@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Game;
 using Game.Common;
 using Game.Simulation;
@@ -42,6 +43,7 @@ namespace RailCapacityGuard
         private StringTooltip m_LineWhen;
         private StringTooltip m_LineHeadway;
         private StringTooltip m_LineState;
+        private StringTooltip m_LineDmi;   // P6-A 车载监控（DMI）
 
         private const uint kDynamicRefreshFrames = 16;   // 缺陷 3：动态文本（剩余分钟）每 16 帧重算
 
@@ -74,9 +76,11 @@ namespace RailCapacityGuard
             m_LineWhen = new StringTooltip();
             m_LineHeadway = new StringTooltip();
             m_LineState = new StringTooltip();
+            m_LineDmi = new StringTooltip();
             m_Group.children.Add(m_LineWhen);
             m_Group.children.Add(m_LineHeadway);
             m_Group.children.Add(m_LineState);
+            m_Group.children.Add(m_LineDmi);
 
             ModLog.Info("[Tooltip] TrainTooltipSystem created");
         }
@@ -158,7 +162,7 @@ namespace RailCapacityGuard
                 m_LastKind = info.Kind;
                 m_LastReason = info.Reason;
                 m_LastRefreshFrame = now;
-                RebuildChildren(info);
+                RebuildChildren(em, vehicle, info);
             }
 
             // 退路：AddGroup 单独调用在本机不生效 → 逐行 AddMouseTooltip。
@@ -169,7 +173,7 @@ namespace RailCapacityGuard
             }
         }
 
-        private void RebuildChildren(VehicleTooltipInfo info)
+        private void RebuildChildren(EntityManager em, Entity vehicle, VehicleTooltipInfo info)
         {
             // 只更新文本，不动 children 列表（见字段注释）
             float fpm = m_Timebase.FramesPerMinute;
@@ -314,6 +318,58 @@ namespace RailCapacityGuard
 
             m_LineState.value = LocalizedString.Value("状态：" + state);
             m_LineState.color = color;
+
+            // ── P6-A 车载监控（DMI）第 4 行（2026-09-27）——悬浮时实时读，O(1)，不进快照 ──
+            // 数据源（全部经反编译/dump 核实）：
+            //   允许速度：Game.Vehicles.Blocker.m_MaxSpeed（byte，byte/5 = m/s；255 = 上限值即"不限"）
+            //   前车：    Game.Vehicles.Blocker.m_Blocker（挡路者实体）
+            //   信号：    TrainCurrentLane.m_Front.m_Lane → Game.Net.LaneSignal.m_Signal
+            //            （LaneSignalType：Go=通行 / Yield=让行 / SafeStop=安全停车 / Stop=停车 / None=无）
+            // 原则第二十五条：缺数据的段直接省略，不猜测。
+            RailCapacityGuardSetting dmiSettings = Mod.Settings;
+            if (dmiSettings == null || !dmiSettings.EnableDmiDisplay)
+            {
+                m_LineDmi.value = LocalizedString.Value(string.Empty);
+                return;
+            }
+            List<string> dmiParts = new List<string>(4);
+            if (vehicle != Entity.Null && em.Exists(vehicle) && em.HasComponent<Game.Vehicles.Blocker>(vehicle))
+            {
+                Game.Vehicles.Blocker blocker = em.GetComponentData<Game.Vehicles.Blocker>(vehicle);
+                dmiParts.Add(blocker.m_MaxSpeed >= 255
+                    ? "允许：不限速"
+                    : "允许：" + (blocker.m_MaxSpeed / 5f * 3.6f).ToString("F0") + " km/h");
+                if (blocker.m_Blocker != Entity.Null)
+                {
+                    dmiParts.Add("前车 #" + blocker.m_Blocker.Index);
+                }
+            }
+            if (vehicle != Entity.Null && em.Exists(vehicle) && em.HasComponent<TrainCurrentLane>(vehicle))
+            {
+                Entity frontLane = em.GetComponentData<TrainCurrentLane>(vehicle).m_Front.m_Lane;
+                if (frontLane != Entity.Null && em.Exists(frontLane) && em.HasComponent<Game.Net.LaneSignal>(frontLane))
+                {
+                    dmiParts.Add("信号：" + DmiSignalName(em.GetComponentData<Game.Net.LaneSignal>(frontLane).m_Signal));
+                }
+            }
+            if (info.Speed >= 0f)
+            {
+                dmiParts.Add("速度：" + info.Speed.ToString("F1") + " m/s");
+            }
+            m_LineDmi.value = LocalizedString.Value(dmiParts.Count > 0 ? "DMI：" + string.Join(" · ", dmiParts) : string.Empty);
+            m_LineDmi.color = TooltipColor.Info;
+        }
+
+        private static string DmiSignalName(Game.Net.LaneSignalType signal)
+        {
+            switch (signal)
+            {
+                case Game.Net.LaneSignalType.Go: return "通行";
+                case Game.Net.LaneSignalType.Yield: return "让行";
+                case Game.Net.LaneSignalType.SafeStop: return "安全停车";
+                case Game.Net.LaneSignalType.Stop: return "停车";
+                default: return "无";
+            }
         }
 
         /// <summary>问题二：从 dispatch 的 reason 里取出停住原因（形如"（前方车辆 123 占用）"）。</summary>
