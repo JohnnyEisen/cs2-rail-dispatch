@@ -23,6 +23,9 @@ public class TimetableDispatchSystem : GameSystemBase
 {
 	private const int MaxVehiclesPerLine = 32;
 
+	// 阶段 2：本线前车在本段前段（progress 低于此值）时按住发车
+	private const float kFrontTrainProgressHold = 0.6f;
+
 	private const int MaxLinesPerTick = 64;
 
 	private const uint FleetPassInterval = 256u;
@@ -65,6 +68,12 @@ public class TimetableDispatchSystem : GameSystemBase
 	private int m_WindowRecorded;
 
 	private uint m_LastZoneRebuild;
+
+	private uint m_LastSharedRebuild;
+
+	// 阶段 4 余项：zone 级最近放行记录（错峰判据）
+	private readonly Dictionary<int, uint> m_ZoneLastRelease = new Dictionary<int, uint>(32);
+	private readonly Dictionary<int, Entity> m_ZoneLastLine = new Dictionary<int, Entity>(32);
 
 	private uint m_LastPathfindWatchdog;
 
@@ -221,6 +230,11 @@ public class TimetableDispatchSystem : GameSystemBase
 			{
 				m_Throat.Rebuild(entityManager, currentFrame);
 				m_LastZoneRebuild = currentFrame;
+			}
+			if (currentFrame - m_LastSharedRebuild >= 4096u)
+			{
+				m_Throat.RebuildSharedLanes(entityManager);   // 阶段 3：共享段索引
+				m_LastSharedRebuild = currentFrame;
 			}
 		}
 		// P4 watchdog（256 帧对账，TTE 同构）：倍率变更→重应用；数据漂移→从原版基线修复；关闭→恢复
@@ -740,6 +754,13 @@ public class TimetableDispatchSystem : GameSystemBase
 			{
 				value.PostponeStreak = 0;
 				m_WindowDeparts++;
+				// 阶段 4 余项：经咽喉 zone 的放行记录（错峰判据的写入侧）
+				if (s.EnableThroatCoordination && m_Resolver.TryGetUpcomingStationLane(em, vehicle, out var releaseLane)
+					&& m_Throat.TryGetZoneId(releaseLane, out int releaseZone))
+				{
+					m_ZoneLastRelease[releaseZone] = now;
+					m_ZoneLastLine[releaseZone] = line;
+				}
 				if (bypassSlotFloor)
 				{
 					if (target > now)
@@ -902,6 +923,74 @@ public class TimetableDispatchSystem : GameSystemBase
 			reason = "[1x] segment busy -> Hold eta=" + num2.ToString("F0");
 			return DepartureDecision.Hold;
 		}
+		// 阶段 2（2026-09-27，第三十二条（三）落地）：本线前车仍在区间前段（progress < 0.6）且
+		// 非即将到站 → 按住一个周期，避免发出即追尾（站外排队成因之一）。状态词复用
+		// SegmentBusy（"待避 · 前方区间占用"，即第三十四条候选措辞）。
+		for (int j = 0; j < vehicleCount; j++)
+		{
+			Entity frontVehicle = vehicles[j].m_Vehicle;
+			if (frontVehicle == vehicle || !IsManagedVehicle(em, frontVehicle))
+			{
+				continue;
+			}
+
+			VehicleSchedule frontSched;
+			if (!m_VehicleSchedule.TryGetValue(frontVehicle, out frontSched) || frontSched.AtStop
+				|| !frontSched.LegProgressValid || frontSched.LegProgress >= kFrontTrainProgressHold)
+			{
+				continue;
+			}
+
+			VehicleTooltipInfo frontSnap;
+			if (m_TooltipInfo.TryGetValue(frontVehicle, out frontSnap) && frontSnap.IsManaged
+				&& frontSnap.EtaFrames >= 0f && frontSnap.EtaFrames < (float)s.SafetyMarginFrames)
+			{
+				continue;   // 前车即将到站（ETA < 安全余量）→ 视作腾出
+			}
+
+			kind = VehicleStateKind.SegmentBusy;
+			reason = "[5] front train " + frontVehicle.Index + " progress=" + ((int)(frontSched.LegProgress * 100f)) + "% -> Hold";
+			return DepartureDecision.Hold;
+		}
+		// 阶段 3（2026-09-27）：发车进入的第一条车道是共享段（多条线的 PathTargets 引用同 lane），
+		// 且他线管理车正驶向同 lane、其 ETA 不晚于本车 + 余量 → 错峰按住。同线车由 [1x]/[5] 管。
+		if (m_Throat.SharedLaneCount > 0 && em.HasBuffer<TrainNavigationLane>(vehicle))
+		{
+			DynamicBuffer<TrainNavigationLane> myNav = em.GetBuffer<TrainNavigationLane>(vehicle, true);
+			if (myNav.Length > 0)
+			{
+				Entity firstLane = myNav[0].m_Lane;
+				if (m_Throat.IsSharedLane(firstLane))
+				{
+					float myEta = num2;
+					foreach (KeyValuePair<Entity, VehicleTooltipInfo> kv in m_TooltipInfo)
+					{
+						if (kv.Key == vehicle || !kv.Value.IsManaged || kv.Value.Line == line || kv.Value.Kind != VehicleStateKind.Running)
+						{
+							continue;
+						}
+
+						if (!em.HasBuffer<TrainNavigationLane>(kv.Key))
+						{
+							continue;
+						}
+
+						DynamicBuffer<TrainNavigationLane> otherNav = em.GetBuffer<TrainNavigationLane>(kv.Key, true);
+						if (otherNav.Length == 0 || otherNav[0].m_Lane != firstLane)
+						{
+							continue;
+						}
+
+						if (kv.Value.EtaFrames < 0f || kv.Value.EtaFrames <= myEta + (float)s.SafetyMarginFrames)
+						{
+							kind = VehicleStateKind.SegmentBusy;
+							reason = "[7] shared lane " + firstLane.Index + " with line " + kv.Value.Line.Index + " vehicle " + kv.Key.Index + " eta=" + Math.Max(0f, kv.Value.EtaFrames).ToString("F0") + " -> Hold";
+							return DepartureDecision.Hold;
+						}
+					}
+				}
+			}
+		}
 		if (!(capacityVerdict.Blocker == Entity.Null) && !(capacityVerdict.Blocker == vehicle))
 		{
 			float num3 = capacityVerdict.OccupantFreeFrame;
@@ -929,23 +1018,37 @@ public class TimetableDispatchSystem : GameSystemBase
 		}
 		kind = VehicleStateKind.Releasing;
 		reason = "[9] platform free eta=" + num2.ToString("F0") + " source=" + source + " -> depart";
-		if (s.EnableThroatCoordination && m_Throat.TryGetZoneId(lane2, out var zoneId) && m_Throat.TryGetStandingBlocker(em, zoneId, vehicle, out var throatBlocker))
+		if (s.EnableThroatCoordination && m_Throat.TryGetZoneId(lane2, out var zoneId))
 		{
-			// 阶段 4 轻量版（2026-09-27）：停驻挡路车若是管理车辆且自身 ETA 可读，
-			// 剩余 < 安全余量 = 即将腾出 → 不按住（对照区间判据：能算出它什么时候走才做提前量判断）。
-			float throatFreeIn = -1f;
-			if (m_TooltipInfo.TryGetValue(throatBlocker, out var throatSnap) && throatSnap.IsManaged && throatSnap.EtaFrames >= 0f)
-			{
-				throatFreeIn = throatSnap.EtaFrames;
-			}
-			if (throatFreeIn < 0f || throatFreeIn >= (float)s.SafetyMarginFrames)
+			// 阶段 4 余项（2026-09-27）：zone 错峰——他线在 MinHeadwayFrames 内刚经此 zone 放行过
+			// → 本车推迟（同线车不受限，线内节奏由 [1x]/[5]/slot 链管）。
+			uint zoneReleasedAt;
+			Entity zoneReleasedBy;
+			if (m_ZoneLastRelease.TryGetValue(zoneId, out zoneReleasedAt) && now - zoneReleasedAt < (uint)Math.Max(8f, state.MinHeadwayFrames)
+				&& m_ZoneLastLine.TryGetValue(zoneId, out zoneReleasedBy) && zoneReleasedBy != line)
 			{
 				kind = VehicleStateKind.WaitingThroat;
-				reason = "[3] throat zone " + zoneId + " busy blocker=" + throatBlocker.Index
-					+ (throatFreeIn >= 0f ? " freeIn=" + throatFreeIn.ToString("F0") : " freeIn=?") + " -> Hold";
+				reason = "[3] zone " + zoneId + " stagger: line " + zoneReleasedBy.Index + " released " + (now - zoneReleasedAt) + "f ago -> Hold";
 				return DepartureDecision.Hold;
 			}
-			ModLog.Verbose("[P3] zone " + zoneId + " blocker=" + throatBlocker.Index + " clearing in " + throatFreeIn.ToString("F0") + "f -> treat as free");
+			if (m_Throat.TryGetStandingBlocker(em, zoneId, vehicle, out var throatBlocker))
+			{
+				// 阶段 4 轻量版（2026-09-27）：停驻挡路车若是管理车辆且自身 ETA 可读，
+				// 剩余 < 安全余量 = 即将腾出 → 不按住（对照区间判据：能算出它什么时候走才做提前量判断）。
+				float throatFreeIn = -1f;
+				if (m_TooltipInfo.TryGetValue(throatBlocker, out var throatSnap) && throatSnap.IsManaged && throatSnap.EtaFrames >= 0f)
+				{
+					throatFreeIn = throatSnap.EtaFrames;
+				}
+				if (throatFreeIn < 0f || throatFreeIn >= (float)s.SafetyMarginFrames)
+				{
+					kind = VehicleStateKind.WaitingThroat;
+					reason = "[3] throat zone " + zoneId + " busy blocker=" + throatBlocker.Index
+						+ (throatFreeIn >= 0f ? " freeIn=" + throatFreeIn.ToString("F0") : " freeIn=?") + " -> Hold";
+					return DepartureDecision.Hold;
+				}
+				ModLog.Verbose("[P3] zone " + zoneId + " blocker=" + throatBlocker.Index + " clearing in " + throatFreeIn.ToString("F0") + "f -> treat as free");
+			}
 		}
 		if (s.EnableEarlyDeparture && state.MaxEarlyFrames >= 1f)
 		{
@@ -1225,6 +1328,9 @@ public class TimetableDispatchSystem : GameSystemBase
 		m_UnknownBlockerHolds.Clear();
 		m_TimetableLogged.Clear();
 		m_SpeedProbeLogged.Clear();
+		m_ZoneLastRelease.Clear();
+		m_ZoneLastLine.Clear();
+		m_LastSharedRebuild = 0u;
 	}
 
 	/// <summary>

@@ -52,6 +52,87 @@ namespace RailCapacityGuard.Services
         private readonly List<List<Entity>> m_Zones = new List<List<Entity>>();
         private readonly HashSet<int> m_BusyLogged = new HashSet<int>();
 
+        // 阶段 3（2026-09-27）：共享段索引——lane 被多条线路的 PathTargets（m_StartLane/m_EndLane，
+        // 宿主 Owner.m_Owner==line，dump:6620/49840）引用 ⇒ 共享。只存"≥2 条线"的 lane。
+        private readonly Dictionary<Entity, Entity> m_LaneFirstLine = new Dictionary<Entity, Entity>(512);
+        private readonly HashSet<Entity> m_SharedLanes = new HashSet<Entity>();
+
+        public int SharedLaneCount => m_SharedLanes.Count;
+
+        public bool IsSharedLane(Entity lane)
+        {
+            return lane != Entity.Null && m_SharedLanes.Contains(lane);
+        }
+
+        /// <summary>重建共享段索引（每 4096 帧；防御外壳同 Rebuild）。</summary>
+        public void RebuildSharedLanes(EntityManager entityManager)
+        {
+            m_LaneFirstLine.Clear();
+            m_SharedLanes.Clear();
+            try
+            {
+                EntityQuery query = entityManager.CreateEntityQuery(new ComponentType[] { ComponentType.ReadOnly<Game.Routes.PathTargets>() });
+                NativeArray<Entity> hosts = query.ToEntityArray(Allocator.Temp);
+                try
+                {
+                    int n = hosts.Length > 512 ? 512 : hosts.Length;
+                    for (int i = 0; i < n; i++)
+                    {
+                        Entity host = hosts[i];
+                        if (!entityManager.HasComponent<Game.Common.Owner>(host))
+                        {
+                            continue;
+                        }
+
+                        Entity owner = entityManager.GetComponentData<Game.Common.Owner>(host).m_Owner;
+                        if (owner == Entity.Null)
+                        {
+                            continue;
+                        }
+
+                        Game.Routes.PathTargets targets = entityManager.GetComponentData<Game.Routes.PathTargets>(host);
+                        MarkShared(targets.m_StartLane, owner);
+                        MarkShared(targets.m_EndLane, owner);
+                    }
+
+                    if (m_SharedLanes.Count > 0)
+                    {
+                        ModLog.Verbose("[P3] shared lanes=" + m_SharedLanes.Count + " hosts=" + n);
+                    }
+                }
+                finally
+                {
+                    hosts.Dispose();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ModLog.Error("[P3] RebuildSharedLanes failed: " + ex);
+                m_SharedLanes.Clear();
+            }
+        }
+
+        private void MarkShared(Entity lane, Entity owner)
+        {
+            if (lane == Entity.Null || m_SharedLanes.Count >= 1024)
+            {
+                return;
+            }
+
+            Entity first;
+            if (m_LaneFirstLine.TryGetValue(lane, out first))
+            {
+                if (first != owner)
+                {
+                    m_SharedLanes.Add(lane);
+                }
+            }
+            else if (m_LaneFirstLine.Count < 2048)
+            {
+                m_LaneFirstLine[lane] = owner;
+            }
+        }
+
         public ThroatZoneService(World world) : base(world)
         {
         }
@@ -438,6 +519,8 @@ namespace RailCapacityGuard.Services
             m_LaneToZone.Clear();
             m_Zones.Clear();
             m_BusyLogged.Clear();
+            m_LaneFirstLine.Clear();
+            m_SharedLanes.Clear();
             LastSeedCount = 0;
             LastRebuildFrame = 0;
         }
