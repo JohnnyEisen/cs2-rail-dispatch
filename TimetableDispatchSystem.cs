@@ -77,6 +77,10 @@ public class TimetableDispatchSystem : GameSystemBase
 	// 国铁正点阈值：晚点 ≤ 0.5 游戏分钟（91 帧）仍算正点（近似"晚点 1 分钟内不计"的宽松口径）
 	private const float kPunctualFrames = 91f;
 
+	// 国铁晚点恢复——压缩停站系数：晚点车编图时停站按此比例压缩（图定自然回落实现"晚点吸收"，
+	// 否则链式图定 = 上一站实际 + 区间 + 停站 会把晚点永久传播）。0.5 = 半数停站时分用于恢复。
+	private const float kDwellCompression = 0.5f;
+
 	private int m_WindowOnTime;
 
 	private int m_WindowLate;
@@ -518,7 +522,18 @@ public class TimetableDispatchSystem : GameSystemBase
 
 					uint num8 = ((value5.LastDepartFrame != 0) ? value5.LastDepartFrame : now);
 					value5.ScheduleUnknown = num7 < num6;
-					value5.PlannedDepartFrame = (value5.ScheduleUnknown ? now : (num8 + (uint)(num7 + value5.LastDwellFrames)));
+					// 国铁补丁④（算法测算）：晚点恢复 = 压缩停站。上一段晚点的车，本站计划停站按
+					// kDwellCompression 压缩（下限 0.25 游戏分钟），图定随之上调回落——否则链式图定
+					// （上一站实际 + 区间 + 停站）会把晚点永久传播、越积越深。实测放行仍由时刻表
+					// 锚定（Hold 至 planned），与"不早开"不冲突：planned 压缩后更早，是编图目标提前。
+					float dwellForPlan = value5.LastDwellFrames;
+					if (value5.LateFrames > kPunctualFrames && dwellForPlan > 0f)
+					{
+						float compressed = Math.Max(0.25f * fpm, dwellForPlan * kDwellCompression);
+						ModLog.Verbose("[P7] dwell compression vehicle=" + vehicle.Index + " late=" + value5.LateFrames.ToString("F0") + "f dwell " + dwellForPlan.ToString("F0") + "->" + compressed.ToString("F0"));
+						dwellForPlan = compressed;
+					}
+					value5.PlannedDepartFrame = (value5.ScheduleUnknown ? now : (num8 + (uint)(num7 + dwellForPlan)));
 					value5.AtStop = true;
 					value5.StopEnterFrame = now;
 					ModLog.Verbose("[P7] legSrc line=" + line.Index + " ring=" + m_SegmentTime.GetLineSampleCount(line) + " median=" + m_SegmentTime.GetLineMedian(line).ToString("F0") + " used=" + num7.ToString("F0"));
@@ -1299,12 +1314,30 @@ public class TimetableDispatchSystem : GameSystemBase
 
 		float dwellMedian = m_SegmentTime.GetMedianDwell(line);
 		float roundTripMinutes = (legMedian + dwellMedian) * stops / fpm;
+		// 国铁补丁⑤（算法测算，2026-09-27）：运行图三要素——
+		//   需要车底数 = ⌈圈时 / 发车间隔⌉（N = T周/I）；通过能力 ≈ 60/I 对每小时；
+		//   现有车数取 RouteVehicle buffer 实长。图定间隔用原版 m_VehicleInterval（units→分钟）。
+		float intervalMinutes = 0f;
+		if (em.HasComponent<TransportLine>(line))
+		{
+			intervalMinutes = UnitConversion.UnitsToMinutes(em.GetComponentData<TransportLine>(line).m_VehicleInterval, m_Timebase.UnitMinutes);
+		}
+		int vehiclesNow = 0;
+		if (em.HasBuffer<RouteVehicle>(line))
+		{
+			vehiclesNow = em.GetBuffer<RouteVehicle>(line, true).Length;
+		}
+		float suggestedFleet = ((intervalMinutes > 0.01f) ? (float)Math.Ceiling(roundTripMinutes / intervalMinutes) : 0f);
+		float capacityPerHour = ((intervalMinutes > 0.01f) ? (60f / intervalMinutes) : 0f);
 		ModLog.Info("[P8] timetable line=" + line.Index + " stops=" + stops
 			+ " legMedian=" + (legMedian / fpm).ToString("F1") + "min"
 			+ " dwellMedian=" + (dwellMedian / fpm).ToString("F1") + "min"
 			+ " roundTrip≈" + roundTripMinutes.ToString("F1") + "min"
 			+ " legSamples=" + m_SegmentTime.GetLineSampleCount(line)
-			+ " segRef(min)=[" + string.Join(",", segRef) + "]");
+			+ " segRef(min)=[" + string.Join(",", segRef) + "]"
+			+ " | fleet now=" + vehiclesNow + " need≈" + suggestedFleet.ToString("F0")
+			+ " interval=" + intervalMinutes.ToString("F1") + "min"
+			+ " capacity≈" + capacityPerHour.ToString("F1") + "/h");
 	}
 
 	private void ClearPerLoadState()
