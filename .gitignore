@@ -7,3 +7,6 @@ UI/dist/
 # 本机 AI 工具产物
 .zcode/
 .zcodeignore
+
+# 本机路径（游戏 Managed 目录 / Mod 部署目录），模板见 Directory.Build.props.example
+Directory.Build.props

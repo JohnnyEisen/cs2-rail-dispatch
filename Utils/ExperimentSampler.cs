@@ -26,13 +26,15 @@ namespace RailCapacityGuard.Utils
     ///
     /// 开关（三层，全部可关闭）：
     ///   1. 游戏内总闸：Settings.EnableDiagnosticLogging（关 = 采集器完全不工作）
-    ///   2. 启动标志文件：E:\DSH\CS2\_analysis\exp_start.flag（存在才启动）
-    ///   3. 写入许可文件：E:\DSH\CS2\_analysis\exp_write.flag（存在才允许写 Blocker.m_MaxSpeed）
+    ///   2. 启动标志文件：&lt;采集目录&gt;\exp_start.flag（存在才启动）
+    ///   3. 写入许可文件：&lt;采集目录&gt;\exp_write.flag（存在才允许写 Blocker.m_MaxSpeed）
     ///
+    /// 采集目录（OutputDir）：默认 %USERPROFILE%\RailCapacityGuard\_analysis，
+    ///   可用环境变量 RAILGUARD_SAMPLER_DIR 覆盖（本机路径不写进源码）。
     /// 输出（每条记录：frame,experiment,entity,field,value）：
-    ///   E:\DSH\CS2\_analysis\expC_time.csv
-    ///   E:\DSH\CS2\_analysis\expA_cost.csv
-    ///   E:\DSH\CS2\_analysis\expB_blocker.csv
+    ///   &lt;采集目录&gt;\expC_time.csv
+    ///   &lt;采集目录&gt;\expA_cost.csv
+    ///   &lt;采集目录&gt;\expB_blocker.csv
     /// 完成后写 exp_done.flag 并自禁用（不再采样）。
     ///
     /// 只读字段全部经反射表确认；写入型字段仅 Blocker.m_MaxSpeed（dump:110293），
@@ -40,7 +42,19 @@ namespace RailCapacityGuard.Utils
     /// </summary>
     public static class ExperimentSampler
     {
-        private const string OutputDir = "E:\\DSH\\CS2\\_analysis";
+        /// <summary>实验采集目录：默认 %USERPROFILE%\RailCapacityGuard\_analysis，可用环境变量 RAILGUARD_SAMPLER_DIR 覆盖。</summary>
+        private static readonly string OutputDir = ResolveOutputDir();
+
+        private static string ResolveOutputDir()
+        {
+            string overridden = Environment.GetEnvironmentVariable("RAILGUARD_SAMPLER_DIR");
+            if (!string.IsNullOrEmpty(overridden))
+            {
+                return overridden;
+            }
+
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "RailCapacityGuard", "_analysis");
+        }
         private const string StartFlagName = "exp_start.flag";
         private const string WriteFlagName = "exp_write.flag";
         private const string DoneFlagName = "exp_done.flag";
