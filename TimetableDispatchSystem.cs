@@ -69,9 +69,10 @@ public class TimetableDispatchSystem : GameSystemBase
 
 	private uint m_LastZoneRebuild;
 
-	private uint m_LastSharedRebuild;
-
-	// 阶段 4 余项：zone 级最近放行记录（错峰判据）
+	// 阶段 4 余项：zone 级最近放行记录。错峰窗 = kZoneStaggerFrames（2026-09-27 实测修正：
+	// 初版误用 MinHeadwayFrames=2 游戏分钟，咽喉穿越量级只有几游戏秒 → 53 次过度 Hold，
+	// 即"功能上线后说不上来的问题"的主因）。128 帧 ≈ 0.7 游戏分钟，一次穿越的量级。
+	private const float kZoneStaggerFrames = 128f;
 	private readonly Dictionary<int, uint> m_ZoneLastRelease = new Dictionary<int, uint>(32);
 	private readonly Dictionary<int, Entity> m_ZoneLastLine = new Dictionary<int, Entity>(32);
 
@@ -230,11 +231,6 @@ public class TimetableDispatchSystem : GameSystemBase
 			{
 				m_Throat.Rebuild(entityManager, currentFrame);
 				m_LastZoneRebuild = currentFrame;
-			}
-			if (currentFrame - m_LastSharedRebuild >= 4096u)
-			{
-				m_Throat.RebuildSharedLanes(entityManager);   // 阶段 3：共享段索引
-				m_LastSharedRebuild = currentFrame;
 			}
 		}
 		// P4 watchdog（256 帧对账，TTE 同构）：倍率变更→重应用；数据漂移→从原版基线修复；关闭→恢复
@@ -952,45 +948,8 @@ public class TimetableDispatchSystem : GameSystemBase
 			reason = "[5] front train " + frontVehicle.Index + " progress=" + ((int)(frontSched.LegProgress * 100f)) + "% -> Hold";
 			return DepartureDecision.Hold;
 		}
-		// 阶段 3（2026-09-27）：发车进入的第一条车道是共享段（多条线的 PathTargets 引用同 lane），
-		// 且他线管理车正驶向同 lane、其 ETA 不晚于本车 + 余量 → 错峰按住。同线车由 [1x]/[5] 管。
-		if (m_Throat.SharedLaneCount > 0 && em.HasBuffer<TrainNavigationLane>(vehicle))
-		{
-			DynamicBuffer<TrainNavigationLane> myNav = em.GetBuffer<TrainNavigationLane>(vehicle, true);
-			if (myNav.Length > 0)
-			{
-				Entity firstLane = myNav[0].m_Lane;
-				if (m_Throat.IsSharedLane(firstLane))
-				{
-					float myEta = num2;
-					foreach (KeyValuePair<Entity, VehicleTooltipInfo> kv in m_TooltipInfo)
-					{
-						if (kv.Key == vehicle || !kv.Value.IsManaged || kv.Value.Line == line || kv.Value.Kind != VehicleStateKind.Running)
-						{
-							continue;
-						}
-
-						if (!em.HasBuffer<TrainNavigationLane>(kv.Key))
-						{
-							continue;
-						}
-
-						DynamicBuffer<TrainNavigationLane> otherNav = em.GetBuffer<TrainNavigationLane>(kv.Key, true);
-						if (otherNav.Length == 0 || otherNav[0].m_Lane != firstLane)
-						{
-							continue;
-						}
-
-						if (kv.Value.EtaFrames < 0f || kv.Value.EtaFrames <= myEta + (float)s.SafetyMarginFrames)
-						{
-							kind = VehicleStateKind.SegmentBusy;
-							reason = "[7] shared lane " + firstLane.Index + " with line " + kv.Value.Line.Index + " vehicle " + kv.Key.Index + " eta=" + Math.Max(0f, kv.Value.EtaFrames).ToString("F0") + " -> Hold";
-							return DepartureDecision.Hold;
-						}
-					}
-				}
-			}
-		}
+		// 阶段 3 已移除（2026-09-27 实测无效）：PathTargets 数据源是站端车道，[7] 全场 0 触发；
+		// 跨线共享冲突由 [3]（zone 占用/错峰）与 [5]（前车位置）覆盖。
 		if (!(capacityVerdict.Blocker == Entity.Null) && !(capacityVerdict.Blocker == vehicle))
 		{
 			float num3 = capacityVerdict.OccupantFreeFrame;
@@ -1024,7 +983,7 @@ public class TimetableDispatchSystem : GameSystemBase
 			// → 本车推迟（同线车不受限，线内节奏由 [1x]/[5]/slot 链管）。
 			uint zoneReleasedAt;
 			Entity zoneReleasedBy;
-			if (m_ZoneLastRelease.TryGetValue(zoneId, out zoneReleasedAt) && now - zoneReleasedAt < (uint)Math.Max(8f, state.MinHeadwayFrames)
+			if (m_ZoneLastRelease.TryGetValue(zoneId, out zoneReleasedAt) && now - zoneReleasedAt < (uint)kZoneStaggerFrames
 				&& m_ZoneLastLine.TryGetValue(zoneId, out zoneReleasedBy) && zoneReleasedBy != line)
 			{
 				kind = VehicleStateKind.WaitingThroat;
@@ -1330,7 +1289,6 @@ public class TimetableDispatchSystem : GameSystemBase
 		m_SpeedProbeLogged.Clear();
 		m_ZoneLastRelease.Clear();
 		m_ZoneLastLine.Clear();
-		m_LastSharedRebuild = 0u;
 	}
 
 	/// <summary>
