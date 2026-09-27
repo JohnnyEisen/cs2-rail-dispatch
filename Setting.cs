@@ -193,5 +193,79 @@ namespace RailCapacityGuard
             get => m_MaxBoardingMinutes;
             set => m_MaxBoardingMinutes = value;
         }
+
+        // ── P4 动态寻路代价（默认关闭；缩放原版 PathfindTrackData 的 Comfort 维度）──
+        private bool m_EnablePathfindCostScale;
+        private float m_PathfindSwitchCostScale = 1f;
+        private float m_PathfindCurveCostScale = 1f;
+
+        /// <summary>
+        /// P4 总开关：缩放轨道寻路 prefab 的道岔/交叉/对向/急弯 Comfort 代价。
+        /// 关闭（默认）= 不写任何寻路数据；开启后由 PathfindCostService 缓存原版值再应用，
+        /// 读档/卸载/关闭开关时自动恢复原版值。
+        /// </summary>
+        [SettingsUISection(kMainTab, kTimetableGroup)]
+        public bool EnablePathfindCostScale
+        {
+            get => m_EnablePathfindCostScale;
+            set => m_EnablePathfindCostScale = value;
+        }
+
+        /// <summary>道岔/交叉/对向代价倍率（作用于 SwitchCost/DiamondCrossingCost/TwowayCost 的 .w；1 = 原版）。调大 → 寻路更倾向避开复杂咽喉。</summary>
+        [SettingsUISlider(min = 0.5f, max = 5f, step = 0.5f)]
+        [SettingsUISection(kMainTab, kTimetableGroup)]
+        public float PathfindSwitchCostScale
+        {
+            get => m_PathfindSwitchCostScale;
+            set => m_PathfindSwitchCostScale = value;
+        }
+
+        /// <summary>急弯转角代价倍率（作用于 CurveAngleCost 的 .w；1 = 原版）。调大 → 寻路更倾向走直顺股道（侧线避让更积极）。</summary>
+        [SettingsUISlider(min = 0.5f, max = 5f, step = 0.5f)]
+        [SettingsUISection(kMainTab, kTimetableGroup)]
+        public float PathfindCurveCostScale
+        {
+            get => m_PathfindCurveCostScale;
+            set => m_PathfindCurveCostScale = value;
+        }
+
+        // ── P6-A DMI / P8 ──
+        private bool m_EnableDmiDisplay = true;
+        private bool m_EnableTimetableExport;
+        private bool m_EnableSpeedControlProbe;
+        private float m_SpeedControlProbeKmh;
+
+        /// <summary>P6-A 车载监控（DMI）第 4 行：实时显示允许速度 / 前方信号 / 挡路者 / 本车速度。纯读，默认开。</summary>
+        [SettingsUISection(kMainTab, kTimetableGroup)]
+        public bool EnableDmiDisplay
+        {
+            get => m_EnableDmiDisplay;
+            set => m_EnableDmiDisplay = value;
+        }
+
+        /// <summary>P8 基准时刻表：每条线路在会话内首次被扫描时，把各段运行时间中位数与停站中位数汇总成基准时刻表写入日志。</summary>
+        [SettingsUISection(kMainTab, kTimetableGroup)]
+        public bool EnableTimetableExport
+        {
+            get => m_EnableTimetableExport;
+            set => m_EnableTimetableExport = value;
+        }
+
+        /// <summary>P8-试验性：实时限速写入（Blocker.m_MaxSpeed）。**默认关**：开启后本 Mod 接管全部管理车辆的允许速度，原版恢复接管需关闭开关。</summary>
+        [SettingsUISection(kMainTab, kTimetableGroup)]
+        public bool EnableSpeedControlProbe
+        {
+            get => m_EnableSpeedControlProbe;
+            set => m_EnableSpeedControlProbe = value;
+        }
+
+        /// <summary>试验性限速的目标值（km/h，0 = 不写）。原版语义：Blocker.m_MaxSpeed 为 byte，byte/5 = m/s，上限 255 = 183.6 km/h。</summary>
+        [SettingsUISlider(min = 0f, max = 180f, step = 10f)]
+        [SettingsUISection(kMainTab, kTimetableGroup)]
+        public float SpeedControlProbeKmh
+        {
+            get => m_SpeedControlProbeKmh;
+            set => m_SpeedControlProbeKmh = value;
+        }
     }
 }
