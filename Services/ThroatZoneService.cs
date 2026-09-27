@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Game.Net;
 using Game.Pathfind;
+using Game.Vehicles;
 using Unity.Collections;
 using Unity.Entities;
 using RailCapacityGuard.Utils;
@@ -47,6 +48,7 @@ namespace RailCapacityGuard.Services
 
         private readonly Dictionary<Entity, int> m_LaneToZone = new Dictionary<Entity, int>();
         private readonly List<List<Entity>> m_Zones = new List<List<Entity>>();
+        private readonly HashSet<int> m_BusyLogged = new HashSet<int>();
 
         public ThroatZoneService(World world) : base(world)
         {
@@ -374,6 +376,12 @@ namespace RailCapacityGuard.Services
             return zoneId >= 0 && zoneId < m_Zones.Count ? m_Zones[zoneId].Count : 0;
         }
 
+        /// <summary>
+        /// 咽喉区忙闲判断（2026-09-27 完善）：任何成员 lane 上有非本车的 LaneReservation.m_Blocker 即忙，
+        /// **但正在移动的挡路车不算**——它正在穿越咽喉，顷刻腾出；只有"停驻"的挡路车才值得 Hold。
+        /// （对照第十九条 P2 的教训：占用判据必须区分"挡一下就走"与"真的停住"，否则咽喉区会被
+        /// 途经车辆短暂预约拖成永久忙。）诊断：每个区组首条 busy 记一条节流日志。
+        /// </summary>
         public bool IsBusy(EntityManager entityManager, int zoneId, Entity exceptVehicle)
         {
             if (zoneId < 0 || zoneId >= m_Zones.Count)
@@ -391,10 +399,22 @@ namespace RailCapacityGuard.Services
                 }
 
                 Entity blocker = entityManager.GetComponentData<LaneReservation>(lane).m_Blocker;
-                if (blocker != Entity.Null && blocker != exceptVehicle)
+                if (blocker == Entity.Null || blocker == exceptVehicle)
                 {
-                    return true;
+                    continue;
                 }
+
+                if (entityManager.HasComponent<TrainNavigation>(blocker)
+                    && entityManager.GetComponentData<TrainNavigation>(blocker).m_Speed > 0.5f)
+                {
+                    continue;   // 在移动 → 正在穿越，不算忙
+                }
+
+                if (m_BusyLogged.Add(zoneId))
+                {
+                    ModLog.Verbose("[P3] zone " + zoneId + " busy blocker=" + blocker.Index + " lanes=" + lanes.Count);
+                }
+                return true;
             }
 
             return false;
@@ -404,6 +424,7 @@ namespace RailCapacityGuard.Services
         {
             m_LaneToZone.Clear();
             m_Zones.Clear();
+            m_BusyLogged.Clear();
             LastSeedCount = 0;
             LastRebuildFrame = 0;
         }
