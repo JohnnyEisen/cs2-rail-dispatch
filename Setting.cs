@@ -54,7 +54,9 @@ namespace RailCapacityGuard
             m_EnableTimetableDispatch = true;
             m_EnableCapacityFeedback = true;
             m_EnableThroatCoordination = false;
-            m_EnableEarlyDeparture = true;
+            // 国铁规则对齐（2026-09-27）：旅客列车不得早于图定发车（"晚开不早开"）。
+            // [4] 后压提前发车默认关；需要美式/日式高周转风格时手动开启。
+            m_EnableEarlyDeparture = false;
             m_EnableFleetAdaptation = false;
             m_EnableClockMeasurement = false;
             m_EnableTooltip = true;

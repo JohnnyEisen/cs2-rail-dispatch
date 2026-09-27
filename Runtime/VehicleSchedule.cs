@@ -23,6 +23,12 @@ namespace RailCapacityGuard.Runtime
         /// <summary>本车上一站实测停站时间（帧）；0 = 还没测到。</summary>
         public float LastDwellFrames;
 
+        /// <summary>
+        /// 实际离开帧 − 图定发车帧（国铁"晚点量"，2026-09-27 对齐）。
+        /// > 0 = 晚点；≤ 0 = 正点/早到。在离站结算时写入，用于"晚点车优先恢复正点"。
+        /// </summary>
+        public float LateFrames;
+
         /// <summary>进入当前站台的帧（用于测停站时间）。</summary>
         public uint StopEnterFrame;
 

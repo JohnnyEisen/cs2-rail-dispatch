@@ -73,6 +73,13 @@ public class TimetableDispatchSystem : GameSystemBase
 	// 初版误用 MinHeadwayFrames=2 游戏分钟，咽喉穿越量级只有几游戏秒 → 53 次过度 Hold，
 	// 即"功能上线后说不上来的问题"的主因）。128 帧 ≈ 0.7 游戏分钟，一次穿越的量级。
 	private const float kZoneStaggerFrames = 128f;
+
+	// 国铁正点阈值：晚点 ≤ 0.5 游戏分钟（91 帧）仍算正点（近似"晚点 1 分钟内不计"的宽松口径）
+	private const float kPunctualFrames = 91f;
+
+	private int m_WindowOnTime;
+
+	private int m_WindowLate;
 	private readonly Dictionary<int, uint> m_ZoneLastRelease = new Dictionary<int, uint>(32);
 	private readonly Dictionary<int, Entity> m_ZoneLastLine = new Dictionary<int, Entity>(32);
 
@@ -216,13 +223,15 @@ public class TimetableDispatchSystem : GameSystemBase
 		if (currentFrame - m_LastStatsFrame >= 256)
 		{
 			m_LastStatsFrame = currentFrame;
-			ModLog.Verbose("[P7] window: writes=" + m_WindowWrites + " noData=" + m_WindowNoData + " holds=" + m_WindowHolds + " departs=" + m_WindowDeparts + " seen=" + m_WindowSeen + " recorded=" + m_WindowRecorded);
+			ModLog.Verbose("[P7] window: writes=" + m_WindowWrites + " noData=" + m_WindowNoData + " holds=" + m_WindowHolds + " departs=" + m_WindowDeparts + " seen=" + m_WindowSeen + " recorded=" + m_WindowRecorded + " onTime=" + m_WindowOnTime + " late=" + m_WindowLate);
 			m_WindowWrites = 0;
 			m_WindowNoData = 0;
 			m_WindowHolds = 0;
 			m_WindowDeparts = 0;
 			m_WindowSeen = 0;
 			m_WindowRecorded = 0;
+			m_WindowOnTime = 0;
+			m_WindowLate = 0;
 		}
 		if (settings.EnableThroatCoordination)
 		{
@@ -523,6 +532,20 @@ public class TimetableDispatchSystem : GameSystemBase
 				// 不再要求 planned 已过：车头一离站 boarding 就结束，若此时 planned 还在未来，
 				// 旧逻辑会落进 8 tick 闩锁 → tooltip 先“未知”再弹回“图定”，车尾离站再弹一次。
 				value5.LastDepartFrame = now;
+				// 国铁补丁②③（2026-09-27）：晚点量 = 实际离开 − 图定发车；正点 ≤ 0.5 游戏分钟。
+				// 晚点量入库供"晚点车优先恢复正点"；计数进 window 正点率 KPI。
+				if (value5.PlannedDepartFrame != 0u)
+				{
+					value5.LateFrames = (float)now - (float)value5.PlannedDepartFrame;
+					if (value5.LateFrames <= kPunctualFrames)
+					{
+						m_WindowOnTime++;
+					}
+					else
+					{
+						m_WindowLate++;
+					}
+				}
 				if (value5.StopEnterFrame != 0u && now > value5.StopEnterFrame)
 				{
 					value5.LastDwellFrames = Math.Min((float)(now - value5.StopEnterFrame), 1800f);
@@ -981,14 +1004,24 @@ public class TimetableDispatchSystem : GameSystemBase
 		{
 			// 阶段 4 余项（2026-09-27）：zone 错峰——他线在 MinHeadwayFrames 内刚经此 zone 放行过
 			// → 本车推迟（同线车不受限，线内节奏由 [1x]/[5]/slot 链管）。
-			uint zoneReleasedAt;
-			Entity zoneReleasedBy;
-			if (m_ZoneLastRelease.TryGetValue(zoneId, out zoneReleasedAt) && now - zoneReleasedAt < (uint)kZoneStaggerFrames
-				&& m_ZoneLastLine.TryGetValue(zoneId, out zoneReleasedBy) && zoneReleasedBy != line)
+			uint zoneReleasedAt = 0u;
+			Entity zoneReleasedBy = Entity.Null;
+			bool wouldStagger = m_ZoneLastRelease.TryGetValue(zoneId, out zoneReleasedAt) && now - zoneReleasedAt < (uint)kZoneStaggerFrames
+				&& m_ZoneLastLine.TryGetValue(zoneId, out zoneReleasedBy) && zoneReleasedBy != line;
+			// 国铁补丁②：晚点车优先恢复正点——本车晚点超过阈值时不受他线错峰窗限制
+			bool iAmLate = m_VehicleSchedule.TryGetValue(vehicle, out var mySched) && mySched.LateFrames > kPunctualFrames;
+			if (wouldStagger)
 			{
-				kind = VehicleStateKind.WaitingThroat;
-				reason = "[3] zone " + zoneId + " stagger: line " + zoneReleasedBy.Index + " released " + (now - zoneReleasedAt) + "f ago -> Hold";
-				return DepartureDecision.Hold;
+				if (iAmLate)
+				{
+					ModLog.Verbose("[P7] late priority vehicle=" + vehicle.Index + " late=" + mySched.LateFrames.ToString("F0") + "f -> skip zone stagger");
+				}
+				else
+				{
+					kind = VehicleStateKind.WaitingThroat;
+					reason = "[3] zone " + zoneId + " stagger: line " + zoneReleasedBy.Index + " released " + (now - zoneReleasedAt) + "f ago -> Hold";
+					return DepartureDecision.Hold;
+				}
 			}
 			if (m_Throat.TryGetStandingBlocker(em, zoneId, vehicle, out var throatBlocker))
 			{
