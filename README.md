@@ -108,7 +108,7 @@ UI/                         独立 UI 探针（webpack 构建，产物不进版�
 - **Traffic Tool Essentials (TTE)** — 程序集 `C2VM.TrafficToolEssentials`。P4 的「缓存原版值 → 应用 → 看门狗 + 读档恢复」三段式与其 `PathfindCostModifierSystem` 同构；P2/P3 的「读数据、不拦函数」思路亦参考该项目。仅思路与结构参考，未拷贝代码。
 - **RealisticPathFinding (RPF)** — ruzbeh0（<https://github.com/ruzbeh0/RealisticPathFinding>）。P2/P3 的「读数据、不拦函数」思路参考。
 - **ExtendedTooltip** — 工具提示的 children 结构与挂载方式参考（<https://thunderstore.io/c/cities-skylines-ii/p/Cities2Modding/ExtendedTooltip/>）；未使用其 Harmony 路线，未拷贝代码。
-- **游戏本体与官方 Modding 工具链** — `Game.*` API 一律先经反编译 / 反射表核对后再引用，禁止凭记忆编写；`Colossal.*`、`Unity.Entities` 等运行时由游戏提供，不分发。
+- **游戏本体与运行时** — 《城市：天际线 2》© Colossal Order / Paradox Interactive。`Game.*`、`Colossal.*`、`Unity.*` 运行时由游戏提供，本仓库不分发。
 - 除 TransitTimetables 外，以上均为**思路 / 结构参考**，不含第三方代码。
 
 ## 许可证
