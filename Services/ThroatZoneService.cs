@@ -28,7 +28,9 @@ namespace RailCapacityGuard.Services
     public sealed class ThroatZoneService : RailGuardServiceBase
     {
         private const int MaxTrackLanes = 4000;
-        private const int MaxSeeds = 512;
+        // 2026-09-27 实测：1938 条轨道车道时种子已顶满 512 上限被截断（日志 seeds=512），分组不完整且
+        // 重建间 zone 数漂移（125↔126）→ 上限提到 2048，覆盖全部种子。
+        private const int MaxSeeds = 2048;
         private const int MaxZoneLanes = 64;
         private const int MaxNodeBuckets = 8192;
 
@@ -384,6 +386,16 @@ namespace RailCapacityGuard.Services
         /// </summary>
         public bool IsBusy(EntityManager entityManager, int zoneId, Entity exceptVehicle)
         {
+            return TryGetStandingBlocker(entityManager, zoneId, exceptVehicle, out _);
+        }
+
+        /// <summary>
+        /// 取本区组第一个"停驻挡路车"（在移动的途经车不算，见 IsBusy 注释）；
+        /// 找不到返回 false。ETA 感知放行由调用方（调度系统，持有快照）决定——服务层不依赖快照。
+        /// </summary>
+        public bool TryGetStandingBlocker(EntityManager entityManager, int zoneId, Entity exceptVehicle, out Entity blocker)
+        {
+            blocker = Entity.Null;
             if (zoneId < 0 || zoneId >= m_Zones.Count)
             {
                 return false;
@@ -398,21 +410,22 @@ namespace RailCapacityGuard.Services
                     continue;
                 }
 
-                Entity blocker = entityManager.GetComponentData<LaneReservation>(lane).m_Blocker;
-                if (blocker == Entity.Null || blocker == exceptVehicle)
+                Entity candidate = entityManager.GetComponentData<LaneReservation>(lane).m_Blocker;
+                if (candidate == Entity.Null || candidate == exceptVehicle)
                 {
                     continue;
                 }
 
-                if (entityManager.HasComponent<TrainNavigation>(blocker)
-                    && entityManager.GetComponentData<TrainNavigation>(blocker).m_Speed > 0.5f)
+                if (entityManager.HasComponent<TrainNavigation>(candidate)
+                    && entityManager.GetComponentData<TrainNavigation>(candidate).m_Speed > 0.5f)
                 {
                     continue;   // 在移动 → 正在穿越，不算忙
                 }
 
+                blocker = candidate;
                 if (m_BusyLogged.Add(zoneId))
                 {
-                    ModLog.Verbose("[P3] zone " + zoneId + " busy blocker=" + blocker.Index + " lanes=" + lanes.Count);
+                    ModLog.Verbose("[P3] zone " + zoneId + " busy blocker=" + candidate.Index + " lanes=" + lanes.Count);
                 }
                 return true;
             }
