@@ -929,11 +929,23 @@ public class TimetableDispatchSystem : GameSystemBase
 		}
 		kind = VehicleStateKind.Releasing;
 		reason = "[9] platform free eta=" + num2.ToString("F0") + " source=" + source + " -> depart";
-		if (s.EnableThroatCoordination && m_Throat.TryGetZoneId(lane2, out var zoneId) && m_Throat.IsBusy(em, zoneId, vehicle))
+		if (s.EnableThroatCoordination && m_Throat.TryGetZoneId(lane2, out var zoneId) && m_Throat.TryGetStandingBlocker(em, zoneId, vehicle, out var throatBlocker))
 		{
-			kind = VehicleStateKind.WaitingThroat;
-			reason = "[3] throat zone " + zoneId + " busy -> Hold";
-			return DepartureDecision.Hold;
+			// 阶段 4 轻量版（2026-09-27）：停驻挡路车若是管理车辆且自身 ETA 可读，
+			// 剩余 < 安全余量 = 即将腾出 → 不按住（对照区间判据：能算出它什么时候走才做提前量判断）。
+			float throatFreeIn = -1f;
+			if (m_TooltipInfo.TryGetValue(throatBlocker, out var throatSnap) && throatSnap.IsManaged && throatSnap.EtaFrames >= 0f)
+			{
+				throatFreeIn = throatSnap.EtaFrames;
+			}
+			if (throatFreeIn < 0f || throatFreeIn >= (float)s.SafetyMarginFrames)
+			{
+				kind = VehicleStateKind.WaitingThroat;
+				reason = "[3] throat zone " + zoneId + " busy blocker=" + throatBlocker.Index
+					+ (throatFreeIn >= 0f ? " freeIn=" + throatFreeIn.ToString("F0") : " freeIn=?") + " -> Hold";
+				return DepartureDecision.Hold;
+			}
+			ModLog.Verbose("[P3] zone " + zoneId + " blocker=" + throatBlocker.Index + " clearing in " + throatFreeIn.ToString("F0") + "f -> treat as free");
 		}
 		if (s.EnableEarlyDeparture && state.MaxEarlyFrames >= 1f)
 		{
