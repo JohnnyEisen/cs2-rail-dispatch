@@ -3,3 +3,7 @@ obj/
 UI/node_modules/
 UI/dist/
 *.user
+
+# 本机 AI 工具产物
+.zcode/
+.zcodeignore
