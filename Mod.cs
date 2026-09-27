@@ -70,8 +70,9 @@ namespace RailCapacityGuard
             // 3b-2) 列车 tooltip：必须在 UITooltip 相位（dump:83182 = 23）才会被 tooltip 管线收集
             updateSystem.UpdateAt<TrainTooltipSystem>(SystemUpdatePhase.UITooltip);
 
-            // 3c) 实验采集驱动（临时诊断，采集期结束即删）
-            updateSystem.UpdateAt<ExperimentSamplerSystem>(SystemUpdatePhase.GameSimulation);
+            // 3c) 实验采集驱动——**已收回（2026-09-27，采集期结束）**：注销出调度队列；
+            // 代码与 flag 门控（exp_start.flag）保留，重启实验时取消下行注释即可。
+            // updateSystem.UpdateAt<ExperimentSamplerSystem>(SystemUpdatePhase.GameSimulation);
 
             // 4) 版本守卫汇总（唯一的缺失报警出口）
             GameApiProbe.ReportMissing();

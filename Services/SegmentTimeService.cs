@@ -24,11 +24,38 @@ namespace RailCapacityGuard.Services
         private const int kMaxSegments = 256;
         private const float kMinDurationUnits = 0.5f;
 
+        // ── leg 护栏（2026-09-26 leg=17895760 事故后新增）──────────────────────────
+        // 上限 = 1 游戏日（1440 min × 182.0444 fpm = 262144 帧）：任何"段运行时间"超过一天都是垃圾
+        //（典型来源：原版 BeginBoarding 用 uint 减法算 (arrival − m_DepartureFrame)，而 m_DepartureFrame
+        //  在 boarding 开始时被写成未来帧（RouteUtils.CalculateDepartureFrame / simFrame+60），车若早于
+        //  该帧到达下一站 → uint 回绕 → ~4.29E9 差值 ÷60 存进 m_AverageTravelTime 的 EMA，永久污染）。
+        // 下界 = 0.5×fpm（半游戏分钟）：短于此的"段"视为噪声。
+        public const float kMaxLegFrames = 262144f;
+
+        /// <summary>把一段"帧数"夹取到合法区间 [0.5×fpm, kMaxLegFrames]（护栏唯一入口）。</summary>
+        public static float ClampLegFrames(float frames, float fpm)
+        {
+            float low = 0.5f * fpm;
+            if (frames < low)
+            {
+                return low;
+            }
+            if (frames > kMaxLegFrames)
+            {
+                return kMaxLegFrames;
+            }
+            return frames;
+        }
+
         private readonly Dictionary<Entity, float[]> m_Ring = new Dictionary<Entity, float[]>(64);
         private readonly Dictionary<Entity, int> m_Count = new Dictionary<Entity, int>(64);
         private readonly Dictionary<Entity, int> m_Head = new Dictionary<Entity, int>(64);
         private readonly Dictionary<Entity, float> m_MeanLeg = new Dictionary<Entity, float>(64);
         private readonly Dictionary<Entity, uint> m_MeanFrame = new Dictionary<Entity, uint>(64);
+        // P8 基准时刻表：停站时间 ring（线路级；分站聚合留待需要时再做）
+        private readonly Dictionary<Entity, float[]> m_DwellRing = new Dictionary<Entity, float[]>(64);
+        private readonly Dictionary<Entity, int> m_DwellCount = new Dictionary<Entity, int>(64);
+        private readonly Dictionary<Entity, int> m_DwellHead = new Dictionary<Entity, int>(64);
         private readonly float[] m_Scratch = new float[kRing];
         private readonly float[] m_ScratchWide = new float[kMaxSegments];
         private readonly float[] m_SegmentScratch = new float[kMaxSegments];
@@ -40,12 +67,75 @@ namespace RailCapacityGuard.Services
             m_Head.Clear();
             m_MeanLeg.Clear();
             m_MeanFrame.Clear();
+            m_DwellRing.Clear();
+            m_DwellCount.Clear();
+            m_DwellHead.Clear();
         }
 
-        /// <summary>记录一条"真实 leg"（发车帧 → 下一站进站帧），用于回退 ①。</summary>
+        /// <summary>记录一次实测停站时间（帧，P8 基准时刻表数据源），护栏同 leg。</summary>
+        public void RecordDwell(Entity line, float frames)
+        {
+            if (frames <= 0f || frames > kMaxLegFrames)
+            {
+                return;
+            }
+
+            float[] ring;
+            if (!m_DwellRing.TryGetValue(line, out ring))
+            {
+                ring = new float[kRing];
+                m_DwellRing[line] = ring;
+                m_DwellCount[line] = 0;
+                m_DwellHead[line] = 0;
+            }
+
+            int head = m_DwellHead[line];
+            ring[head] = frames;
+            m_DwellHead[line] = (head + 1) % kRing;
+            int count = m_DwellCount[line];
+            if (count < kRing)
+            {
+                m_DwellCount[line] = count + 1;
+            }
+        }
+
+        /// <summary>本线最近 kRing 次实测停站的中位数（帧）；样本不足返回 0。</summary>
+        public float GetMedianDwell(Entity line)
+        {
+            float[] ring;
+            int count;
+            if (!m_DwellRing.TryGetValue(line, out ring) || !m_DwellCount.TryGetValue(line, out count) || count <= 0)
+            {
+                return 0f;
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                m_Scratch[i] = ring[i];
+            }
+
+            for (int i = 1; i < count; i++)
+            {
+                float key = m_Scratch[i];
+                int j = i - 1;
+                while (j >= 0 && m_Scratch[j] > key)
+                {
+                    m_Scratch[j + 1] = m_Scratch[j];
+                    j--;
+                }
+                m_Scratch[j + 1] = key;
+            }
+
+            return m_Scratch[count / 2];
+        }
+
+        /// <summary>
+        /// 记录一条"真实 leg"（发车帧 → 下一站进站帧），用于回退 ①。
+        /// 护栏：> kMaxLegFrames（1 游戏日）的样本是垃圾（回绕/跨日停摆），直接丢弃不入 ring。
+        /// </summary>
         public void RecordLeg(Entity line, float frames)
         {
-            if (frames <= 0f)
+            if (frames <= 0f || frames > kMaxLegFrames)
             {
                 return;
             }
@@ -109,21 +199,26 @@ namespace RailCapacityGuard.Services
         /// <summary>
         /// 数据源（原版自维护，上客期间也在刷新）：本线各 waypoint 上
         /// Game.Routes.VehicleTiming.m_AverageTravelTime 的中位数。
-        /// 依据（反编译）：TransportBoardingHelpers 每次 BeginBoarding 调
-        /// RouteUtils.UpdateAverageTravelTime(m_AverageTravelTime, departureFrame, simulationFrame)
-        /// ⇒ 单位为 sim 帧，按 waypoint 记录「从发车到本站」的平均行程时间。
-        /// 用途：独立于我们自身测算的兜底/交叉校验，消除读不到数据导致的未知。
+        /// 单位（反编译复核 2026-09-26 晚，修正 9d877a7 的"帧"误判）：
+        ///   RouteUtils.UpdateAverageTravelTime = (arrivalFrame − departureFrame) / 60f ⇒ 存的是 **route units**
+        ///   （与 CalculateDepartureFrame 的 ÷60/×60 对称、与 TT TimebaseSystem "60 sim-frames per unit" 一致），
+        ///   必须经 UnitConversion.UnitsToFrames 转帧后再用；此前把 units 当帧用 → 差 60×。
+        /// 污染防护：TransportBoardingHelpers.BeginBoarding:345-367 用 **uint 减法**，而 m_DepartureFrame
+        ///   在 boarding 开始时被写成未来帧 ⇒ 车早于图定到达时差值回绕成 ~4.29E9 垃圾，EMA 0.5 长期保留。
+        ///   故每个样本先转帧、再只收 [0.5×fpm, kMaxLegFrames] 区间内的样本，区间外（含回绕垃圾）直接丢弃。
         /// </summary>
-        public bool TryGetLineVehicleTimingMedian(EntityManager em, Entity line, float minFrames, out float frames)
+        public bool TryGetLineVehicleTimingMedian(EntityManager em, Entity line, float unitMinutes, float fpm, float minFrames, out float frames)
         {
                 frames = 0f;
-                if (line == Entity.Null || !em.Exists(line) || !em.HasBuffer<Game.Routes.RouteWaypoint>(line))
+                if (line == Entity.Null || !em.Exists(line) || !em.HasBuffer<Game.Routes.RouteWaypoint>(line)
+                    || unitMinutes <= 0f || fpm <= 0f)
                 {
                         return false;
                 }
 
                 DynamicBuffer<Game.Routes.RouteWaypoint> waypoints = em.GetBuffer<Game.Routes.RouteWaypoint>(line, true);
                 int count = waypoints.Length > kMaxSegments ? kMaxSegments : waypoints.Length;
+                float low = 0.5f * fpm;
                 int used = 0;
                 for (int i = 0; i < count; i++)
                 {
@@ -133,10 +228,10 @@ namespace RailCapacityGuard.Services
                                 continue;
                         }
 
-                        float value = em.GetComponentData<Game.Routes.VehicleTiming>(wp).m_AverageTravelTime;
-                        if (value >= minFrames)
+                        float framesSample = UnitConversion.UnitsToFrames(em.GetComponentData<Game.Routes.VehicleTiming>(wp).m_AverageTravelTime, unitMinutes, fpm);
+                        if (framesSample >= low && framesSample <= kMaxLegFrames)
                         {
-                                m_ScratchWide[used++] = value;
+                                m_ScratchWide[used++] = framesSample;
                         }
                 }
 
@@ -226,7 +321,7 @@ namespace RailCapacityGuard.Services
                 m_SegmentScratch[j + 1] = key;
             }
 
-            frames = UnitConversion.UnitsToFrames(m_SegmentScratch[used / 2], unitMinutes, fpm);
+            frames = SegmentTimeService.ClampLegFrames(UnitConversion.UnitsToFrames(m_SegmentScratch[used / 2], unitMinutes, fpm), fpm);
             m_MeanLeg[line] = frames;
             m_MeanFrame[line] = now;
             return frames >= minFrames;
