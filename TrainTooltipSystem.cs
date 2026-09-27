@@ -303,14 +303,14 @@ namespace RailCapacityGuard
                     break;
                 case VehicleStateKind.StoppedEnRoute:
                     // 问题二：停了就说停住，并给出我们能看到的原因（速度来自 TrainNavigation.m_Speed）
-                    state = "等待中 · 速度 " + info.Speed.ToString("F1") + " m/s"
+                    state = "等待中 · 速度 " + UnitConversion.SpeedToKmh(info.Speed).ToString("F0") + " km/h"
                         + (string.IsNullOrEmpty(info.Reason) ? string.Empty : " " + StopCause(info.Reason));
                     color = TooltipColor.Warning;
                     break;
                 default:
                     // 问题一：ETA 已挪到第 1 行，这里只报"在跑"
                     state = info.Speed >= 0f
-                        ? "运行中 · 速度 " + info.Speed.ToString("F1") + " m/s"
+                        ? "运行中 · 速度 " + UnitConversion.SpeedToKmh(info.Speed).ToString("F0") + " km/h"
                         : "运行中";
                     color = TooltipColor.Info;
                     break;
@@ -336,9 +336,10 @@ namespace RailCapacityGuard
             if (vehicle != Entity.Null && em.Exists(vehicle) && em.HasComponent<Game.Vehicles.Blocker>(vehicle))
             {
                 Game.Vehicles.Blocker blocker = em.GetComponentData<Game.Vehicles.Blocker>(vehicle);
+                // 速度显示统一走 UnitConversion.SpeedToKmh（世界尺度系数 1.8，实测校准 2026-09-27）
                 dmiParts.Add(blocker.m_MaxSpeed >= 255
                     ? "允许：不限速"
-                    : "允许：" + (blocker.m_MaxSpeed / 5f * 3.6f).ToString("F0") + " km/h");
+                    : "允许：" + UnitConversion.SpeedToKmh(blocker.m_MaxSpeed / 5f).ToString("F0") + " km/h");
                 if (blocker.m_Blocker != Entity.Null)
                 {
                     dmiParts.Add("前车 #" + blocker.m_Blocker.Index);
@@ -354,7 +355,7 @@ namespace RailCapacityGuard
             }
             if (info.Speed >= 0f)
             {
-                dmiParts.Add("速度：" + info.Speed.ToString("F1") + " m/s");
+                dmiParts.Add("速度：" + UnitConversion.SpeedToKmh(info.Speed).ToString("F0") + " km/h");
             }
             m_LineDmi.value = LocalizedString.Value(dmiParts.Count > 0 ? "DMI：" + string.Join(" · ", dmiParts) : string.Empty);
             m_LineDmi.color = TooltipColor.Info;

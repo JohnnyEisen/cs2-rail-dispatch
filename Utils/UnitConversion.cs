@@ -19,6 +19,19 @@ namespace RailCapacityGuard.Utils
     /// </summary>
     internal static class UnitConversion
     {
+        /// <summary>
+        /// 世界速度 → 游戏 UI km/h 的实测校准系数（2026-09-27 玩家实测：游戏速度表 160 km/h 时
+        /// TrainNavigation.m_Speed = 88.9 ⇒ 系数 160/88.9 ≈ 1.8）。CS2 世界尺度下速度显示
+        /// **不是物理 ×3.6**；Blocker.m_MaxSpeed 的 byte/5 同为世界单位速度，显示时同乘本系数。
+        /// </summary>
+        public const float kWorldSpeedToKmh = 1.8f;
+
+        /// <summary>世界单位速度（TrainNavigation.m_Speed、Blocker.m_MaxSpeed/5）→ 游戏 UI 口径 km/h。</summary>
+        public static float SpeedToKmh(float worldSpeed)
+        {
+            return worldSpeed * kWorldSpeedToKmh;
+        }
+
         /// <summary>route units → 帧。清单要求的静态工具方法。</summary>
         public static float UnitsToFrames(float units, float unitMinutes, float framesPerMinute)
         {
