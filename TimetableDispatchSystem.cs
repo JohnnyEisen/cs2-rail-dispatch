@@ -59,17 +59,31 @@ public class TimetableDispatchSystem : GameSystemBase
 
 	private int m_WindowDeparts;
 
+	// 仪表（2026-09-27"tooltip 消失"排查）：seen = 通过 IsManagedVehicle 的车次；recorded = 快照写入次数
+	private int m_WindowSeen;
+
+	private int m_WindowRecorded;
+
 	private uint m_LastZoneRebuild;
+
+	private uint m_LastPathfindWatchdog;
 
 	private readonly Dictionary<Entity, byte> m_LastDecision = new Dictionary<Entity, byte>(256);
 
 	private readonly SegmentTimeService m_SegmentTime = new SegmentTimeService();
+
+	// P4 动态寻路代价（默认关闭；开启时缓存原版值→应用→watchdog，读档/卸载恢复）
+	private readonly PathfindCostService m_PathfindCost = new PathfindCostService();
 
 	private readonly HashSet<Entity> m_FirstEntryLogged = new HashSet<Entity>();
 
 	private readonly Dictionary<Entity, float> m_LastHeadwayLogged = new Dictionary<Entity, float>(64);
 
 	private readonly HashSet<Entity> m_TerminusLogged = new HashSet<Entity>();
+
+	private readonly HashSet<Entity> m_TimetableLogged = new HashSet<Entity>();   // P8：每线每会话导出一次
+
+	private readonly HashSet<Entity> m_SpeedProbeLogged = new HashSet<Entity>();   // P8：限速探针首次写入日志去重
 
 	private readonly HashSet<Entity> m_SegmentUnknownLogged = new HashSet<Entity>();
 
@@ -79,6 +93,9 @@ public class TimetableDispatchSystem : GameSystemBase
 
 	// 主循环行缓存（避免每 8 帧分配 NativeArray）
 	private readonly List<Entity> m_CachedLines = new List<Entity>(64);
+
+	// 重设线路时原版"删旧建新"可同帧完成 → 行数不变 → 缓存不刷新，残留失效实体（NRE@GetComponentData）
+	private readonly List<Entity> m_StaleLines = new List<Entity>(8);
 	private int m_CachedLineCount = -1;
 	private uint m_LastTooltipPrune;
 	private readonly List<Entity> m_PruneScratch = new List<Entity>(64);
@@ -135,6 +152,17 @@ public class TimetableDispatchSystem : GameSystemBase
 		{
 			ClearPerLoadState();
 		}
+		else
+		{
+			try
+			{
+				// P4：实体引用跨读档失效 → 清缓存；存档若带回缩放值先写回原版常量（之后按设置重放）
+				m_PathfindCost.ResetAfterLoad(EntityManager);
+			}
+			catch (Exception)
+			{
+			}
+		}
 		ModLog.Info("[P7] OnGameLoadingComplete running=" + m_Running + " mode=" + mode.ToString() + " purpose=" + purpose.ToString());
 	}
 
@@ -178,11 +206,13 @@ public class TimetableDispatchSystem : GameSystemBase
 		if (currentFrame - m_LastStatsFrame >= 256)
 		{
 			m_LastStatsFrame = currentFrame;
-			ModLog.Verbose("[P7] window: writes=" + m_WindowWrites + " noData=" + m_WindowNoData + " holds=" + m_WindowHolds + " departs=" + m_WindowDeparts);
+			ModLog.Verbose("[P7] window: writes=" + m_WindowWrites + " noData=" + m_WindowNoData + " holds=" + m_WindowHolds + " departs=" + m_WindowDeparts + " seen=" + m_WindowSeen + " recorded=" + m_WindowRecorded);
 			m_WindowWrites = 0;
 			m_WindowNoData = 0;
 			m_WindowHolds = 0;
 			m_WindowDeparts = 0;
+			m_WindowSeen = 0;
+			m_WindowRecorded = 0;
 		}
 		if (settings.EnableThroatCoordination)
 		{
@@ -191,6 +221,19 @@ public class TimetableDispatchSystem : GameSystemBase
 			{
 				m_Throat.Rebuild(entityManager, currentFrame);
 				m_LastZoneRebuild = currentFrame;
+			}
+		}
+		// P4 watchdog（256 帧对账，TTE 同构）：倍率变更→重应用；数据漂移→从原版基线修复；关闭→恢复
+		if (currentFrame - m_LastPathfindWatchdog >= 256u)
+		{
+			m_LastPathfindWatchdog = currentFrame;
+			try
+			{
+				m_PathfindCost.Watchdog(entityManager, settings.EnablePathfindCostScale, settings.PathfindSwitchCostScale, settings.PathfindCurveCostScale, currentFrame);
+			}
+			catch (Exception ex)
+			{
+				ModLog.Error("[P4] watchdog failed: " + ex);
 			}
 		}
 		if (!settings.EnableTimetableDispatch)
@@ -243,10 +286,32 @@ public class TimetableDispatchSystem : GameSystemBase
 		{
 			ProcessLine(entityManager, settings, m_CachedLines[i], currentFrame, framesPerMinute, unitMinutes);
 		}
+		if (m_StaleLines.Count > 0)
+		{
+			for (int i = 0; i < m_StaleLines.Count; i++)
+			{
+				Entity stale = m_StaleLines[i];
+				m_CachedLines.Remove(stale);
+				m_States.Remove(stale);
+				m_LastHeadwayLogged.Remove(stale);
+				m_SegmentUnknownLogged.Remove(stale);
+				m_TerminusLogged.Remove(stale);
+				m_FirstEntryLogged.Remove(stale);
+			}
+			m_StaleLines.Clear();
+			LastLineCount = Math.Min(m_CachedLines.Count, 64);
+		}
 	}
 
 	private void ProcessLine(EntityManager em, RailCapacityGuardSetting s, Entity line, uint now, float fpm, float unitMinutes)
 	{
+		if (line == Entity.Null || !em.Exists(line) || !em.HasComponent<TransportLine>(line))
+		{
+			// 失效线路实体（重设线路后缓存未刷新）：标记待剪枝，绝不能裸 GetComponentData
+			//（原型里已无该组件 → ChunkDataUtility NRE，整个模拟帧报错）
+			m_StaleLines.Add(line);
+			return;
+		}
 		if (!m_States.TryGetValue(line, out var value))
 		{
 			value = new LineRuntimeState
@@ -258,6 +323,10 @@ public class TimetableDispatchSystem : GameSystemBase
 		value.DataUnavailable = false;
 		value.CapacityBlocked = false;
 		TransportLine componentData = em.GetComponentData<TransportLine>(line);
+		if (s.EnableTimetableExport)
+		{
+			ExportTimetable(em, line, now, fpm);
+		}
 		float num = ((componentData.m_VehicleInterval > 0.01f) ? componentData.m_VehicleInterval : 5f);
 		float num2 = UnitConversion.UnitsToMinutes(num, unitMinutes);
 		// 站间运行时间：主源 = 本线实测 leg 中位数（ring，只装真实 leg）；回退 = 线路段 PathInformation 中位数。
@@ -312,6 +381,7 @@ public class TimetableDispatchSystem : GameSystemBase
 			{
 				continue;
 			}
+			m_WindowSeen++;
 			VehiclePublicTransport componentData2 = em.GetComponentData<VehiclePublicTransport>(vehicle);
 			if (m_Resolver.TryGetCurrentStationLane(em, vehicle, out var _) && (componentData2.m_State & PublicTransportFlags.AbandonRoute) != 0 && (componentData2.m_State & PublicTransportFlags.Boarding) == 0)
 			{
@@ -321,6 +391,24 @@ public class TimetableDispatchSystem : GameSystemBase
 				ModLog.Verbose("[P7] stripped AbandonRoute (at platform) vehicle=" + vehicle.Index);
 			}
 			float num5 = (em.HasComponent<TrainNavigation>(vehicle) ? em.GetComponentData<TrainNavigation>(vehicle).m_Speed : (-1f));
+			// P8-试验性：限速写入探针（默认关）。原版语义（反编译 Game.Vehicles.Blocker.Deserialize 证实）：
+			// m_MaxSpeed 为 byte，byte/5 = m/s，clamp 0–255（=183.6 km/h）。原版持续维护该字段——
+			// 关闭探针即交回原版，无需手动恢复；开启时本 Mod 接管全部管理车辆的允许速度。
+			if (s.EnableSpeedControlProbe && s.SpeedControlProbeKmh > 0f && em.HasComponent<Blocker>(vehicle))
+			{
+				int probeRaw = Math.Min(255, Math.Max(0, (int)(s.SpeedControlProbeKmh / 3.6f * 5f + 0.5f)));
+				Blocker probeBlocker = em.GetComponentData<Blocker>(vehicle);
+				if (probeBlocker.m_MaxSpeed != (byte)probeRaw)
+				{
+					probeBlocker.m_MaxSpeed = (byte)probeRaw;
+					em.SetComponentData(vehicle, probeBlocker);
+					LastWriteCount++;
+					if (m_SpeedProbeLogged.Add(vehicle))
+					{
+						ModLog.Info("[P8] speed probe vehicle=" + vehicle.Index + " maxSpeed=" + probeRaw + " (" + s.SpeedControlProbeKmh.ToString("F0") + " km/h)");
+					}
+				}
+			}
 			bool flag2 = (componentData2.m_State & PublicTransportFlags.Boarding) != 0
 				|| IsBoardingAtLineStop(em, line, vehicle)
 				|| m_Resolver.TryGetCurrentStationLane(em, vehicle, out var _);   // 原版权威信号优先（TransportBoardingHelpers: BeginBoarding 设 BoardingVehicle / EndBoarding 清）
@@ -340,8 +428,10 @@ public class TimetableDispatchSystem : GameSystemBase
 					if (value5.LegStartFrame != 0u && now > value5.LegStartFrame)
 					{
 						float numActual = (float)(now - value5.LegStartFrame);
-						m_SegmentTime.RecordLeg(line, numActual);
-						value5.LastLegFrames = numActual;   // 本车自己的实测 leg（下一段优先用它 → 图定不因线路中位数波动而跳）
+						// 护栏：入库/留存的实测 leg 一律夹取（>1 游戏日 = 回绕/跨日停摆垃圾；leg=17895760 事故）
+						float numActualClamped = SegmentTimeService.ClampLegFrames(numActual, fpm);
+						m_SegmentTime.RecordLeg(line, numActualClamped);
+						value5.LastLegFrames = numActualClamped;   // 本车自己的实测 leg（下一段优先用它 → 图定不因线路中位数波动而跳）
 
 						// 自检只负责告警（估计 vs 实际）
 						if (value5.LegEstimateFrames > 0f)
@@ -369,16 +459,28 @@ public class TimetableDispatchSystem : GameSystemBase
 					//     （均值已被 D3 实测否证：折返/绕路等离群段把 Σ÷n 抬高 3–10×）
 					// ① 本车上一段实测 leg（首选：同一列车自己的时间尺度，最稳）
 					float num7 = (value5.LastLegFrames >= num6) ? value5.LastLegFrames : 0f;
+					// 本车上一段实测 vs 线路中位数离谱偏离守卫（2026-09-27 现象3：107 条 leg sanity，
+					// 短腿 320f 被复用到 2896f 长段）：偏离 2.5×/0.4× 以上时改信中位数（需 ≥3 样本），
+					// 避免上一段工况（短驳/被堵）污染本段图定。
+					if (num7 >= num6 && m_SegmentTime.GetLineSampleCount(line) >= 3)
+					{
+						float numMedianGuard = m_SegmentTime.GetLineMedian(line);
+						if (numMedianGuard >= num6 && (num7 > numMedianGuard * 2.5f || num7 < numMedianGuard * 0.4f))
+						{
+							num7 = numMedianGuard;
+						}
+					}
 					// ② 线路真实 leg 中位数（需 ≥3 样本，1–2 个样本的中位数会随每一段跳变）
 					if (num7 < num6 && m_SegmentTime.GetLineSampleCount(line) >= 3)
 					{
 						num7 = m_SegmentTime.GetLineMedian(line);
 					}
-					// ③ 原版 VehicleTiming.m_AverageTravelTime 中位数（每站 BeginBoarding 都在刷新）
+					// ③ 原版 VehicleTiming.m_AverageTravelTime 中位数（每站 BeginBoarding 都在刷新；
+					//   存的是 route units，服务层内部转帧；区间外样本=uint 回绕垃圾，已被服务层丢弃）
 					if (num7 < num6)
 					{
 						float numVt;
-						if (m_SegmentTime.TryGetLineVehicleTimingMedian(em, line, num6, out numVt))
+						if (m_SegmentTime.TryGetLineVehicleTimingMedian(em, line, unitMinutes, fpm, num6, out numVt))
 						{
 							num7 = numVt;
 						}
@@ -414,6 +516,7 @@ public class TimetableDispatchSystem : GameSystemBase
 				if (value5.StopEnterFrame != 0u && now > value5.StopEnterFrame)
 				{
 					value5.LastDwellFrames = Math.Min((float)(now - value5.StopEnterFrame), 1800f);
+					m_SegmentTime.RecordDwell(line, value5.LastDwellFrames);   // P8 基准时刻表数据源
 				}
 				if (value5.LegStartFrame == 0u)
 				{
@@ -460,11 +563,11 @@ public class TimetableDispatchSystem : GameSystemBase
 			{
 				legEta = value3;   // 线路真实 leg 中位数兜底
 			}
-			// ③ 原版 per-waypoint 平均行程（VehicleTiming.m_AverageTravelTime，每站刷新）
+			// ③ 原版 per-waypoint 平均行程（VehicleTiming.m_AverageTravelTime，每站刷新；units→帧、回绕垃圾已在服务层过滤）
 			if (legEta < 0f)
 			{
 				float numVtEta;
-				if (m_SegmentTime.TryGetLineVehicleTimingMedian(em, line, 0.5f * fpm, out numVtEta))
+				if (m_SegmentTime.TryGetLineVehicleTimingMedian(em, line, unitMinutes, fpm, 0.5f * fpm, out numVtEta))
 				{
 					legEta = numVtEta;
 				}
@@ -478,9 +581,28 @@ public class TimetableDispatchSystem : GameSystemBase
 					legEta = numMedianEta;   // 线路段中位数兜底
 				}
 			}
+			if (legEta > SegmentTimeService.kMaxLegFrames)
+			{
+				legEta = SegmentTimeService.kMaxLegFrames;   // 护栏底线：任何 leg ETA 不超过 1 游戏日
+			}
 
 			// tooltip 第 2 行数据源：本车本段估计（没读到则用线路中位数）
 			value.SegmentRunFrames = (value5.LegEstimateFrames > 0f) ? value5.LegEstimateFrames : value3;
+
+			// 运行中分流（2026-09-27 修订）：所有"不在站台、不在上客"的车都不进发车决策链。
+			// 修复前两个病灶：① 站台不在导航窗内 → NoData"未知"（前修）；② 站台在窗内且图定已过
+			// → Decide[9] 对还在跑的车返回"放行·立即发车/即刻"（22:01 会话 [9] release eta=0/656f 实证）。
+			// 发车决策只在站台上有意义；行驶车只报 Running/StoppedEnRoute + 本段 ETA。
+			if (!value5.AtStop && (componentData2.m_State & PublicTransportFlags.Boarding) == 0)
+			{
+				VehicleStateKind midKind = ((num5 >= 0f && num5 < 0.5f) ? VehicleStateKind.StoppedEnRoute : VehicleStateKind.Running);
+				string midReason = ((midKind == VehicleStateKind.StoppedEnRoute)
+					? "[2x] mid-segment stopped speed=" + num5.ToString("F2") + " m/s" + DescribeStopCause(em, vehicle)
+					: "[2x] running to next stop, departure decision N/A");
+				RecordTooltipInfo(line, vehicle, value, num9, num9, now, DepartureDecision.NoData, midKind, legEta, num5, midReason);
+				m_VehicleSchedule[vehicle] = value5;
+				continue;
+			}
 
 			DepartureDecision departureDecision = Decide(em, s, buffer, num3, line, vehicle, componentData2, num, value, now, fpm, unitMinutes, legEta, num9, out var target, out var early, out var bypassSlotFloor, out var kind, out var etaOut, out var reason);
 			if (departureDecision == DepartureDecision.NoData && kind == VehicleStateKind.Running && num5 >= 0f && num5 < 0.5f)
@@ -504,6 +626,7 @@ public class TimetableDispatchSystem : GameSystemBase
 						m_WindowWrites++;
 					}
 					value5.LastDwellFrames = num11;
+					m_SegmentTime.RecordDwell(line, num11);   // 强制发车也计入停站统计（P8）
 					value5.LastDepartFrame = num12;   // 强制发车也算一次真实发车
 					if (!value5.ForcedDepartLogged)
 					{
@@ -708,7 +831,7 @@ public class TimetableDispatchSystem : GameSystemBase
 		early = false;
 		bypassSlotFloor = false;
 		kind = VehicleStateKind.Running;
-		etaOut = -1f;
+		etaOut = ((legEtaFrames >= 0f) ? legEtaFrames : -1f);   // NoData 返回也携带 ETA（第 1 行不再"未知"）
 		reason = null;
 		if (now < planned)
 		{
@@ -839,6 +962,7 @@ public class TimetableDispatchSystem : GameSystemBase
 
 	private void RecordTooltipInfo(Entity line, Entity vehicle, LineRuntimeState state, uint planned, uint target, uint now, DepartureDecision decision, VehicleStateKind kind, float etaFrames, float speed, string reason, float dwellFrames = -1f, float boardingCapFrames = -1f)
 	{
+		m_WindowRecorded++;
 		if (m_TooltipInfo.Count > 1024)
 		{
 			m_TooltipInfo.Clear();
@@ -1021,6 +1145,61 @@ public class TimetableDispatchSystem : GameSystemBase
 		ModLog.Info("[P7] fleet pollution cleanup done, cleaned=" + num);
 	}
 
+	/// <summary>
+	/// P8：基准时刻表导出（每线每会话一次，EnableTimetableExport 门控，只读汇总）。
+	/// 汇总：段运行时间中位数（ring ≥3 样本优先，否则 RouteSegment 段中位数）、全线停站中位数、
+	/// 循环时间估算（stops × (段中位 + 停站中位)）、各 RouteSegment 的 PathInformation 时长参考
+	///（实测量级偏高 3–10×，仅作段间相对形状参考——第十七条教训）。
+	/// 分站级聚合（每站各自的 leg/dwell）待 dwell/leg 按站分桶后再细化。
+	/// </summary>
+	private void ExportTimetable(EntityManager em, Entity line, uint now, float fpm)
+	{
+		if (!m_TimetableLogged.Add(line) || !em.HasBuffer<Game.Routes.RouteWaypoint>(line))
+		{
+			return;
+		}
+
+		int stops = em.GetBuffer<Game.Routes.RouteWaypoint>(line, true).Length;
+		if (stops <= 0)
+		{
+			return;
+		}
+
+		float legMedian = ((m_SegmentTime.GetLineSampleCount(line) >= 3) ? m_SegmentTime.GetLineMedian(line) : 0f);
+		if (legMedian <= 0f)
+		{
+			m_SegmentTime.TryGetLineMedianLegFrames(em, line, m_Timebase.UnitMinutes, fpm, 0.5f * fpm, now, out legMedian);
+		}
+
+		List<string> segRef = new List<string>(stops);
+		if (em.HasBuffer<RouteSegment>(line))
+		{
+			DynamicBuffer<RouteSegment> segments = em.GetBuffer<RouteSegment>(line, true);
+			int n = Math.Min(segments.Length, stops);
+			for (int i = 0; i < n; i++)
+			{
+				Entity segment = segments[i].m_Segment;
+				if (segment == Entity.Null || !em.Exists(segment) || !em.HasComponent<PathInformation>(segment))
+				{
+					segRef.Add("?");
+					continue;
+				}
+
+				float units = em.GetComponentData<PathInformation>(segment).m_Duration;
+				segRef.Add((units > 0f) ? (UnitConversion.UnitsToFrames(units, m_Timebase.UnitMinutes, fpm) / fpm).ToString("F1") : "?");
+			}
+		}
+
+		float dwellMedian = m_SegmentTime.GetMedianDwell(line);
+		float roundTripMinutes = (legMedian + dwellMedian) * stops / fpm;
+		ModLog.Info("[P8] timetable line=" + line.Index + " stops=" + stops
+			+ " legMedian=" + (legMedian / fpm).ToString("F1") + "min"
+			+ " dwellMedian=" + (dwellMedian / fpm).ToString("F1") + "min"
+			+ " roundTrip≈" + roundTripMinutes.ToString("F1") + "min"
+			+ " legSamples=" + m_SegmentTime.GetLineSampleCount(line)
+			+ " segRef(min)=[" + string.Join(",", segRef) + "]");
+	}
+
 	private void ClearPerLoadState()
 	{
 		m_States.Clear();
@@ -1032,6 +1211,8 @@ public class TimetableDispatchSystem : GameSystemBase
 		m_TerminusLogged.Clear();
 		m_SegmentUnknownLogged.Clear();
 		m_UnknownBlockerHolds.Clear();
+		m_TimetableLogged.Clear();
+		m_SpeedProbeLogged.Clear();
 	}
 
 	/// <summary>
@@ -1042,13 +1223,19 @@ public class TimetableDispatchSystem : GameSystemBase
 	/// </summary>
 	/// <summary>
 	/// 第二十一条：读本车路径位置读数（O(1)；不枚举前方车道、不累加 Curve.m_Length）。
-	/// elementCount = PathElement buffer 长度（原版随行进 RemoveRange 裁剪 → 递减）；
-	/// navLen = TrainNavigationLane.Length（原版维护的前方剩余车道数，0 = 到终点）。
+	/// elementIndex = PathOwner.m_ElementIndex（原版随行进推进的"当前元素索引"，权威进度分子）；
+	/// elementCount = PathElement buffer 长度（行驶中恒定，仅新寻路结果应用时变化 → 用作重寻路检测）；
+	/// navLen = TrainNavigationLane.Length（原版维护的前方剩余车道数，0 = 到终点；兜底）。
 	/// </summary>
-	private void ReadPathCounts(EntityManager em, Entity vehicle, out int elementCount, out int navLen)
+	private void ReadPathPosition(EntityManager em, Entity vehicle, out int elementCount, out int elementIndex, out int navLen)
 	{
 		elementCount = 0;
+		elementIndex = 0;
 		navLen = 0;
+		if (em.HasComponent<PathOwner>(vehicle))
+		{
+			elementIndex = em.GetComponentData<PathOwner>(vehicle).m_ElementIndex;
+		}
 		if (em.HasBuffer<PathElement>(vehicle))
 		{
 			elementCount = em.GetBuffer<PathElement>(vehicle, true).Length;
@@ -1059,24 +1246,45 @@ public class TimetableDispatchSystem : GameSystemBase
 		}
 	}
 
-	/// <summary>发车锚定：记录本段路径元素总数（分母），Progress 归零。</summary>
+	/// <summary>发车锚定：记录本段起始元素索引与元素总数（分母），Progress 归零。</summary>
 	private void AnchorLegProgress(EntityManager em, Entity vehicle, ref VehicleSchedule schedule, uint now)
 	{
 		int elementCount;
+		int elementIndex;
 		int navLen;
-		ReadPathCounts(em, vehicle, out elementCount, out navLen);
+		ReadPathPosition(em, vehicle, out elementCount, out elementIndex, out navLen);
+		bool hasOwner = em.HasComponent<PathOwner>(vehicle);
+		// 陈旧 buffer 守卫（2026-09-27 现象1 根因）：发车锚定若读到的还是上一段的旧路径
+		//（idx 已接近末端 / cnt=0），p 会瞬间锁死高位 → legEta≈0 且"稳定地错"。
+		// 此刻位置不可信 → 判无效，走时间减法；等本段新路径就绪（重寻路/下次锚定）再恢复。
+		if (elementCount <= 0 || elementIndex >= elementCount - 2)
+		{
+			schedule.LegProgress = 0f;
+			schedule.LegProgressValid = false;
+			schedule.LegStartElementCount = elementCount;
+			schedule.LegStartElementIndex = elementIndex;
+			schedule.LegStartNavLen = navLen;
+			schedule.LastElementCount = elementCount;
+			schedule.LastElementIndex = elementIndex;
+			schedule.LastNavLen = navLen;
+			schedule.ProgressLoggedDecile = -1;
+			return;
+		}
 		schedule.LegStartElementCount = elementCount;
+		schedule.LegStartElementIndex = elementIndex;
 		schedule.LegStartNavLen = navLen;
 		schedule.LastElementCount = elementCount;
+		schedule.LastElementIndex = elementIndex;
 		schedule.LastNavLen = navLen;
 		schedule.LegProgress = 0f;
-		schedule.LegProgressValid = (elementCount > 0 || navLen > 1);
+		schedule.LegProgressValid = ((elementCount > 0 && hasOwner) || navLen > 1);
 		schedule.ProgressLoggedDecile = -1;
 	}
 
 	/// <summary>
 	/// 每 tick 更新本段 Progress（仅在车辆已离站/运行中调用）。
-	/// 边界1：buffer 重新分配（重寻路）→ 重新锚定，避免 progress 倒退或为负。
+	/// 分子用 PathOwner.m_ElementIndex（原版随行进推进；"修订 A"的 buffer 长度差作废——行驶中长度恒定）。
+	/// 边界1：buffer 长度变化或元素索引回退（新寻路结果被应用）→ 重新锚定，避免 progress 倒退或为负。
 	/// 边界2：cnt 与 navLen 归零（到终点 / 外连离图）→ Progress=1、停止 ETA，交回原版。
 	/// </summary>
 	private void UpdateLegProgress(EntityManager em, Entity vehicle, ref VehicleSchedule schedule, uint now)
@@ -1087,16 +1295,23 @@ public class TimetableDispatchSystem : GameSystemBase
 		}
 
 		int elementCount;
+		int elementIndex;
 		int navLen;
-		ReadPathCounts(em, vehicle, out elementCount, out navLen);
+		ReadPathPosition(em, vehicle, out elementCount, out elementIndex, out navLen);
 
-		if (schedule.LastElementCount > 0 && elementCount > schedule.LastElementCount)
+		// 边界1（重寻路）：新寻路结果被应用时 ProcessResultsJob 会 Clear/RemoveRange 并把 m_ElementIndex 归零
+		//（PathfindJobs.decompiled.cs:1152-1166），表现为 buffer 长度变化或索引回退/低于锚点 → 重新锚定。
+		bool repath = (schedule.LastElementCount > 0 && elementCount != schedule.LastElementCount)
+			|| (schedule.LastElementIndex > 0 && elementIndex < schedule.LastElementIndex)
+			|| (elementCount > 0 && elementIndex < schedule.LegStartElementIndex);
+		if (repath)
 		{
 			AnchorLegProgress(em, vehicle, ref schedule, now);
-			ModLog.Verbose("[P7] pos reanchor vehicle=" + vehicle.Index + " cnt=" + elementCount + " (buffer grew)");
+			ModLog.Verbose("[P7] pos reanchor vehicle=" + vehicle.Index + " cnt=" + elementCount + " idx=" + elementIndex + " (repath)");
 			return;
 		}
 
+		// 边界2（到终点/离图）：AND 判定（cnt<=0 && navLen<=0）→ Progress=1、停止 ETA、交回原版、不硬算。
 		if (elementCount <= 0 && navLen <= 0)
 		{
 			schedule.LegProgress = 1f;
@@ -1105,14 +1320,23 @@ public class TimetableDispatchSystem : GameSystemBase
 		}
 
 		schedule.LastElementCount = elementCount;
+		schedule.LastElementIndex = elementIndex;
 		schedule.LastNavLen = navLen;
 		float progress = -1f;
 		if (schedule.LegStartElementCount > 0 && elementCount > 0)
 		{
-			progress = (float)(schedule.LegStartElementCount - elementCount) / (float)schedule.LegStartElementCount;
+			// 手册第二十一条原公式：progress = (currentIndex − startElementIndex) / 本段元素跨度。
+			// 末元素索引 = count−1，到站时 elementIndex = count−1 ⇒ progress 恰为 1。
+			int span = schedule.LegStartElementCount - 1 - schedule.LegStartElementIndex;
+			if (span < 1)
+			{
+				span = 1;
+			}
+			progress = (float)(elementIndex - schedule.LegStartElementIndex) / (float)span;
 		}
 		else if (schedule.LegStartNavLen > 1 && navLen > 0)
 		{
+			// 兜底（修订 B）：TrainNavigationLane.Length = 前方剩余车道数，仅 PathElement 不可用时。
 			progress = (float)(schedule.LegStartNavLen - navLen) / (float)(schedule.LegStartNavLen - 1);
 		}
 		if (progress < 0f)
@@ -1132,7 +1356,7 @@ public class TimetableDispatchSystem : GameSystemBase
 		if (decile != schedule.ProgressLoggedDecile)
 		{
 			schedule.ProgressLoggedDecile = decile;
-			ModLog.Verbose("[P7] pos vehicle=" + vehicle.Index + " startCnt=" + schedule.LegStartElementCount + " cnt=" + elementCount + " navLen=" + navLen + " p=" + (schedule.LegProgress * 100f).ToString("F0") + "%");
+			ModLog.Verbose("[P7] pos vehicle=" + vehicle.Index + " startIdx=" + schedule.LegStartElementIndex + " idx=" + elementIndex + " cnt=" + elementCount + " navLen=" + navLen + " p=" + (schedule.LegProgress * 100f).ToString("F0") + "%");
 		}
 	}
 	private bool IsBoardingAtLineStop(EntityManager em, Entity line, Entity vehicle)
@@ -1175,7 +1399,7 @@ public class TimetableDispatchSystem : GameSystemBase
 			for (int i = 0; i < num; i++)
 			{
 				Entity val2 = val[i];
-				if (!m_States.TryGetValue(val2, out var value) || !em.HasBuffer<RouteVehicle>(val2))
+				if (!m_States.TryGetValue(val2, out var value) || !em.HasBuffer<RouteVehicle>(val2) || !em.HasComponent<TransportLine>(val2))
 				{
 					continue;
 				}
@@ -1266,6 +1490,13 @@ public class TimetableDispatchSystem : GameSystemBase
 				{
 				}
 			}
+		}
+		try
+		{
+			m_PathfindCost.Restore(EntityManager);   // P4：卸载前恢复原版寻路数据
+		}
+		catch (Exception)
+		{
 		}
 		ClearPerLoadState();
 		base.OnDestroy();
