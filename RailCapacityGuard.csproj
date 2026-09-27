@@ -2,21 +2,24 @@
 
   <!--
     Rail Capacity Guard — Cities: Skylines II Mod
-    参照物（内部先例，非官方模板）：
-      E:\github文件\Traffic Law Enforcement\Traffic Law Enforcement.csproj
+    参照物（内部先例，非官方模板）：本地另一个 CS2 Mod 工程的 csproj，不随本仓库分发。
 
-    不导入官方模组工具链（D:\Steam\...\.ModdingToolchain\Mod.props / Mod.targets）：
+    不导入官方模组工具链（游戏目录下的 .ModdingToolchain\Mod.props / Mod.targets）：
       * Mod.targets:106 DeployWIP 会 RemoveDir $(LocalModsPath)\$(TargetName)
-      * Mod.props:34  LocalModsPath 默认取用户环境变量 CSII_LOCALMODSPATH（本机为空）
+      * Mod.props:34  LocalModsPath 默认取用户环境变量 CSII_LOCALMODSPATH
         → 不带 -p:LocalModsPath 构建时 DeployDir 会退化成盘根路径，有误删风险
-    因此部署一律手动拷贝 DLL，见交付说明。
+
+    本机路径不入库：GameManagedDir / LocalModsPath / ModDeployDir 由命令行 -p: 提供，
+    或写进本地（.gitignore 的）Directory.Build.props，模板见 Directory.Build.props.example。
 
     构建：
-      dotnet build "Rail Capacity Guard.csproj" -c Debug -p:LocalModsPath=E:\DSH\CS2\_deploytest
+      dotnet build "Rail Capacity Guard.csproj" -c Debug
+    （或在本地 Directory.Build.props 里配好 GameManagedDir，无需每次传参）
   -->
   <PropertyGroup>
-    <GameManagedDir Condition="'$(GameManagedDir)' == ''">D:\Steam\steamapps\common\Cities Skylines II\Cities2_Data\Managed</GameManagedDir>
-    <LocalModsPath Condition="'$(LocalModsPath)' == ''">E:\DSH\CS2\_deploytest</LocalModsPath>
+    <!-- 本机路径默认取同名环境变量；仍为空时由 ValidateBuildInputs 明确报错，不静默降级 -->
+    <GameManagedDir Condition="'$(GameManagedDir)' == ''">$(CSII_GAMEMANAGEDDIR)</GameManagedDir>
+    <LocalModsPath Condition="'$(LocalModsPath)' == ''">$(CSII_LOCALMODSPATH)</LocalModsPath>
 
     <TargetFramework>net48</TargetFramework>
     <LangVersion>9.0</LangVersion>
@@ -135,8 +138,14 @@
       避免游戏递归扫描 mod 子目录时重复加载同一个程序集。
       可用 -p:ModDeployDir=... 覆盖。
     -->
-    <ModDeployDir Condition="'$(ModDeployDir)' == ''">C:\Users\20122\AppData\LocalLow\Colossal Order\Cities Skylines II\Mods\RailCapacityGuard</ModDeployDir>
+    <ModDeployDir Condition="'$(ModDeployDir)' == ''">$(UserProfile)\AppData\LocalLow\Colossal Order\Cities Skylines II\Mods\RailCapacityGuard</ModDeployDir>
   </PropertyGroup>
+
+  <!-- 缺少本机路径时给出明确报错，而不是让 HintPath 静默解析失败 -->
+  <Target Name="ValidateBuildInputs" BeforeTargets="ResolveReferences">
+    <Error Condition="'$(GameManagedDir)' == ''" Text="GameManagedDir 未设置：用 -p:GameManagedDir=... 指定游戏 Cities2_Data\Managed 目录，或写进本地 Directory.Build.props（模板见 Directory.Build.props.example）。" />
+    <Error Condition="'$(ModDeployDir)' == ''" Text="ModDeployDir 未设置：用 -p:ModDeployDir=... 指定本地 Mods 目录。" />
+  </Target>
 
   <!-- 构建后自动部署（等价于 PostBuildEvent，用 MSBuild 任务避免含空格路径的 cmd 引号问题） -->
   <Target Name="DeployToGameMods" AfterTargets="Build">

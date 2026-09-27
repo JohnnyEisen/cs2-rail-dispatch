@@ -50,20 +50,22 @@
 
 ```powershell
 # 故意不导入官方 ModdingToolchain（Mod.props / Mod.targets）：
-# Mod.targets 的 DeployWIP 会 RemoveDir 目标目录，Mod.props 的 LocalModsPath 在本机为空会退化成盘根路径。
+# Mod.targets 的 DeployWIP 会 RemoveDir 目标目录，Mod.props 的 LocalModsPath 缺省会退化成盘根路径。
 dotnet build "Rail Capacity Guard.csproj" -c Debug `
-  -p:GameManagedDir="D:\Steam\steamapps\common\Cities Skylines II\Cities2_Data\Managed" `
-  -p:LocalModsPath="E:\DSH\CS2\_deploytest"
+  -p:GameManagedDir="<游戏安装目录>\Cities2_Data\Managed"
 ```
 
 产物：`bin/Debug/net48/RailCapacityGuard.dll`。
 
-## 部署（手动）
+本机路径（`GameManagedDir` / `ModDeployDir` / `LocalModsPath`）不入库：把 [`Directory.Build.props.example`](Directory.Build.props.example) 复制成 `Directory.Build.props` 填好即可（该文件已被 `.gitignore` 忽略），也可以每次用 `-p:` 传。`GameManagedDir` 缺失时构建会明确报错，不会静默降级。
+
+## 部署
 
 1. **先完全关闭游戏** —— CS2 运行中替换 Mod DLL 会失败或读不到新程序集
-2. 把 `bin/Debug/net48/RailCapacityGuard.dll` 拷到 `...\Mods\RailCapacityGuard\`
-3. 启动游戏，确认 playset 中本 Mod 已启用
-4. 日志：`...\Logs\RailCapacityGuard.log`（需在设置里打开 `EnableDiagnosticLogging` 才有 Verbose 行）
+2. `dotnet build` 结束后 `DeployToGameMods` / `DeployUIBundle` 目标会自动把 `RailCapacityGuard.dll`、`.pdb`、`0Harmony.dll` 与 UI bundle 拷到 `ModDeployDir`（默认 `%USERPROFILE%\AppData\LocalLow\Colossal Order\Cities Skylines II\Mods\RailCapacityGuard\`，可用 `-p:ModDeployDir=` 改）
+3. 不想自动部署时：把 `ModDeployDir` 指向临时目录，或手动拷 `bin/Debug/net48/RailCapacityGuard.dll`
+4. 启动游戏，确认 playset 中本 Mod 已启用
+5. 日志：`...\Logs\RailCapacityGuard.log`（需在设置里打开 `EnableDiagnosticLogging` 才有 Verbose 行）
 
 UI 探针（React + webpack，当前仅为 hello-world，未接入玩法）：
 

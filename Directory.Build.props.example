@@ -1,0 +1,17 @@
+<!--
+  本机路径模板：复制为同目录的 Directory.Build.props（已被 .gitignore 忽略）后按本机情况填写。
+  MSBuild 会自动导入它，因此日常 dotnet build 无需每次传 -p:。
+-->
+<Project>
+  <PropertyGroup>
+    <!-- 必填：游戏程序集目录，形如 <Steam 库>\steamapps\common\Cities Skylines II\Cities2_Data\Managed -->
+    <GameManagedDir></GameManagedDir>
+
+    <!-- 可选：构建后自动部署到哪个本地 Mods 目录。
+         不写则默认 %USERPROFILE%\AppData\LocalLow\Colossal Order\Cities Skylines II\Mods\RailCapacityGuard -->
+    <!-- <ModDeployDir></ModDeployDir> -->
+
+    <!-- 可选：官方 ModdingToolchain 的本地部署根（本工程不导入该工具链，仅为兼容保留） -->
+    <!-- <LocalModsPath></LocalModsPath> -->
+  </PropertyGroup>
+</Project>
