@@ -188,12 +188,12 @@ namespace RailCapacityGuard
             uint target = info.TargetFrame != 0u ? info.TargetFrame : info.PlannedFrame;
             int deltaFrames = (int)target - (int)info.NowFrame;
 
-            // 上下客中 / 图定待定：第 1 行不显示任何时刻（原本会显示"即刻"，与状态矛盾）
-            if (info.Kind == VehicleStateKind.Boarding || info.Kind == VehicleStateKind.ScheduleUnknown)
+            // 修复（2026-09-28，用户报告"待定直到离站才倒计时"）：boarding 期间 planned 已经算出
+            // （到站即锁定 = 上站实际+区间+停站），应显示倒计时而不是"待定"——只有 ScheduleUnknown
+            //（四级估计链全失效，仅新线首圈可能出现）才真正待定。
+            if (info.Kind == VehicleStateKind.ScheduleUnknown)
             {
-                m_LineWhen.value = LocalizedString.Value(info.Kind == VehicleStateKind.Boarding
-                    ? "图定发车：待定（上下客中）"
-                    : "图定发车：待定（站间运行未测出）");
+                m_LineWhen.value = LocalizedString.Value("图定发车：待定（站间运行未测出）");
             }
             else
             {
@@ -205,7 +205,8 @@ namespace RailCapacityGuard
                 || info.Kind == VehicleStateKind.WaitingThroat
                 || info.Kind == VehicleStateKind.SegmentBusy
                 || info.Kind == VehicleStateKind.HoldLimitRelease
-                || info.Kind == VehicleStateKind.Releasing;
+                || info.Kind == VehicleStateKind.Releasing
+                || info.Kind == VehicleStateKind.Boarding;   // boarding 期间照常倒计时（修复过度"待定"）
 
             // 问题三：ETA 太小（< 15 秒）不足以支撑"预计 HH:MM"，此时明确写"即将到达"而不是等于当前时刻
             bool etaMeaningful = info.EtaFrames >= fpm / 4f;
@@ -305,16 +306,13 @@ namespace RailCapacityGuard
                     color = TooltipColor.Warning;
                     break;
                 case VehicleStateKind.StoppedEnRoute:
-                    // 问题二：停了就说停住，并给出我们能看到的原因（速度来自 TrainNavigation.m_Speed）
-                    state = "等待中 · 速度 " + UnitConversion.SpeedToKmh(info.Speed).ToString("F0") + " km/h"
-                        + (string.IsNullOrEmpty(info.Reason) ? string.Empty : " " + StopCause(info.Reason));
+                    // 问题二：停了就说停住，并给出我们能看到的原因。速度只在 DMI 行报一次（去重 2026-09-28）
+                    state = "等待中" + (string.IsNullOrEmpty(info.Reason) ? string.Empty : " " + StopCause(info.Reason));
                     color = TooltipColor.Warning;
                     break;
                 default:
-                    // 问题一：ETA 已挪到第 1 行，这里只报"在跑"
-                    state = info.Speed >= 0f
-                        ? "运行中 · 速度 " + UnitConversion.SpeedToKmh(info.Speed).ToString("F0") + " km/h"
-                        : "运行中";
+                    // 问题一：ETA 已挪到第 1 行，速度只在 DMI 行报一次（去重 2026-09-28）
+                    state = "运行中";
                     color = TooltipColor.Info;
                     break;
             }
@@ -369,7 +367,7 @@ namespace RailCapacityGuard
             if (info.Line != Entity.Null && m_Dispatch.TryGetLineBaseline(info.Line, out var baseline)
                 && baseline.RoundTripMinutes > 0f)
             {
-                string fleetLine = "图定基准：圈时 " + baseline.RoundTripMinutes.ToString("F1") + " 分 · 需 "
+                string fleetLine = "本线基准：圈时 " + baseline.RoundTripMinutes.ToString("F1") + " 分 · 需 "
                     + baseline.NeedFleet.ToString("F0") + " 车 / 现 " + baseline.VehiclesNow;
                 int onTimeSamples = baseline.OnTimeCount + baseline.LateCount;
                 if (onTimeSamples > 0)
