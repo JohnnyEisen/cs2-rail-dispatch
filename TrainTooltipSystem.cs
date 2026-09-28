@@ -44,6 +44,7 @@ namespace RailCapacityGuard
         private StringTooltip m_LineHeadway;
         private StringTooltip m_LineState;
         private StringTooltip m_LineDmi;   // P6-A 车载监控（DMI）
+        private StringTooltip m_LineFleet;   // P8 图定基准表（第 5 行）
 
         private const uint kDynamicRefreshFrames = 16;   // 缺陷 3：动态文本（剩余分钟）每 16 帧重算
 
@@ -77,10 +78,12 @@ namespace RailCapacityGuard
             m_LineHeadway = new StringTooltip();
             m_LineState = new StringTooltip();
             m_LineDmi = new StringTooltip();
+            m_LineFleet = new StringTooltip();
             m_Group.children.Add(m_LineWhen);
             m_Group.children.Add(m_LineHeadway);
             m_Group.children.Add(m_LineState);
             m_Group.children.Add(m_LineDmi);
+            m_Group.children.Add(m_LineFleet);
 
             ModLog.Info("[Tooltip] TrainTooltipSystem created");
         }
@@ -359,6 +362,31 @@ namespace RailCapacityGuard
             }
             m_LineDmi.value = LocalizedString.Value(dmiParts.Count > 0 ? "DMI：" + string.Join(" · ", dmiParts) : string.Empty);
             m_LineDmi.color = TooltipColor.Info;
+
+            // ── P8 图定基准表（第 5 行，2026-09-27 起给玩家看）──
+            // 数据：本线基准（圈时/需要车底/旅行速度）由调度系统每线每会话测算一次缓存；
+            // 正点率随每次离站结算累积。没有基准数据（该线刚建/未跑完一圈）→ 整行留空。
+            if (info.Line != Entity.Null && m_Dispatch.TryGetLineBaseline(info.Line, out var baseline)
+                && baseline.RoundTripMinutes > 0f)
+            {
+                string fleetLine = "图定基准：圈时 " + baseline.RoundTripMinutes.ToString("F1") + " 分 · 需 "
+                    + baseline.NeedFleet.ToString("F0") + " 车 / 现 " + baseline.VehiclesNow;
+                int onTimeSamples = baseline.OnTimeCount + baseline.LateCount;
+                if (onTimeSamples > 0)
+                {
+                    fleetLine += " · 正点 " + (baseline.OnTimeCount * 100 / onTimeSamples) + "%（" + baseline.OnTimeCount + "/" + onTimeSamples + "）";
+                }
+                if (baseline.TravelSpeedKmh > 0f)
+                {
+                    fleetLine += " · v旅 " + baseline.TravelSpeedKmh.ToString("F0") + " km/h";
+                }
+                m_LineFleet.value = LocalizedString.Value(fleetLine);
+                m_LineFleet.color = TooltipColor.Info;
+            }
+            else
+            {
+                m_LineFleet.value = LocalizedString.Value(string.Empty);
+            }
         }
 
         private static string DmiSignalName(Game.Net.LaneSignalType signal)

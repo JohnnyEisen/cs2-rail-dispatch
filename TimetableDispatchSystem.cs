@@ -345,10 +345,7 @@ public class TimetableDispatchSystem : GameSystemBase
 		value.DataUnavailable = false;
 		value.CapacityBlocked = false;
 		TransportLine componentData = em.GetComponentData<TransportLine>(line);
-		if (s.EnableTimetableExport)
-		{
-			ExportTimetable(em, line, now, fpm);
-		}
+		ExportTimetable(em, s, line, now, fpm);
 		float num = ((componentData.m_VehicleInterval > 0.01f) ? componentData.m_VehicleInterval : 5f);
 		float num2 = UnitConversion.UnitsToMinutes(num, unitMinutes);
 		// 站间运行时间：主源 = 本线实测 leg 中位数（ring，只装真实 leg）；回退 = 线路段 PathInformation 中位数。
@@ -558,6 +555,19 @@ public class TimetableDispatchSystem : GameSystemBase
 					else
 					{
 						m_WindowLate++;
+					}
+					// 基准表正点率累积（tooltip 第 5 行数据源）
+					if (m_Baselines.TryGetValue(line, out var blForOnTime))
+					{
+						if (value5.LateFrames <= kPunctualFrames)
+						{
+							blForOnTime.OnTimeCount++;
+						}
+						else
+						{
+							blForOnTime.LateCount++;
+						}
+						m_Baselines[line] = blForOnTime;
 					}
 				}
 				if (value5.StopEnterFrame != 0u && now > value5.StopEnterFrame)
@@ -1268,15 +1278,40 @@ public class TimetableDispatchSystem : GameSystemBase
 	}
 
 	/// <summary>
+	/// 图定基准表条目（P8，2026-09-27 起对玩家可见：列车 tooltip 第 5 行）。
+	/// ExportTimetable 每线每会话填充一次；正点率随离站结算持续累积。
+	/// </summary>
+	public struct LineBaseline
+	{
+		public int Stops;
+		public float RoundTripMinutes;
+		public int VehiclesNow;
+		public float NeedFleet;
+		public float ActualIntervalMinutes;
+		public float TravelSpeedKmh;
+		public int OnTimeCount;
+		public int LateCount;
+	}
+
+	private readonly Dictionary<Entity, LineBaseline> m_Baselines = new Dictionary<Entity, LineBaseline>(64);
+
+	/// <summary>给 Tooltip 系统读的基准表快照（无数据返回 false——该线尚未被导出/统计过）。</summary>
+	public bool TryGetLineBaseline(Entity line, out LineBaseline baseline)
+	{
+		return m_Baselines.TryGetValue(line, out baseline);
+	}
+
+	/// <summary>
 	/// P8：基准时刻表导出（每线每会话一次，EnableTimetableExport 门控，只读汇总）。
 	/// 汇总：段运行时间中位数（ring ≥3 样本优先，否则 RouteSegment 段中位数）、全线停站中位数、
 	/// 循环时间估算（stops × (段中位 + 停站中位)）、各 RouteSegment 的 PathInformation 时长参考
-	///（实测量级偏高 3–10×，仅作段间相对形状参考——第十七条教训）。
+	///（实测量级偏高 3–10×，仅段间相对形状参考——第十七条教训）。
 	/// 分站级聚合（每站各自的 leg/dwell）待 dwell/leg 按站分桶后再细化。
 	/// </summary>
-	private void ExportTimetable(EntityManager em, Entity line, uint now, float fpm)
+	private void ExportTimetable(EntityManager em, RailCapacityGuardSetting s, Entity line, uint now, float fpm)
 	{
-		if (!m_TimetableLogged.Add(line) || !em.HasBuffer<Game.Routes.RouteWaypoint>(line))
+		// 重计算每线每会话一次（填 m_Baselines 供 tooltip 第 5 行）；日志仍受 EnableTimetableExport 门控
+		if (m_Baselines.ContainsKey(line) || !em.HasBuffer<Game.Routes.RouteWaypoint>(line))
 		{
 			return;
 		}
@@ -1369,6 +1404,18 @@ public class TimetableDispatchSystem : GameSystemBase
 			+ " capacity≈" + capacityPerHour.ToString("F1") + "/h"
 			+ " actual≈" + actualIntervalMinutes.ToString("F1") + "min/" + actualCapacityPerHour.ToString("F1") + "per-h"
 			+ " v旅=" + travelSpeedKmh.ToString("F1") + "km/h");
+
+		m_Baselines[line] = new LineBaseline
+		{
+			Stops = stops,
+			RoundTripMinutes = roundTripMinutes,
+			VehiclesNow = vehiclesNow,
+			NeedFleet = suggestedFleet,
+			ActualIntervalMinutes = actualIntervalMinutes,
+			TravelSpeedKmh = travelSpeedKmh,
+			OnTimeCount = 0,
+			LateCount = 0
+		};
 	}
 
 	private void ClearPerLoadState()
@@ -1386,6 +1433,7 @@ public class TimetableDispatchSystem : GameSystemBase
 		m_SpeedProbeLogged.Clear();
 		m_ZoneLastRelease.Clear();
 		m_ZoneLastLine.Clear();
+		m_Baselines.Clear();
 	}
 
 	/// <summary>
