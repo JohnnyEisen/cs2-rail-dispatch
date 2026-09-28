@@ -23,8 +23,7 @@ public class TimetableDispatchSystem : GameSystemBase
 {
 	private const int MaxVehiclesPerLine = 32;
 
-	// 阶段 2：本线前车在本段前段（progress 低于此值）时按住发车
-	private const float kFrontTrainProgressHold = 0.6f;
+	private const int kMaxSegments2 = 256;   // 旅行速度里程求和的段数上界
 
 	private const int MaxLinesPerTick = 64;
 
@@ -957,9 +956,11 @@ public class TimetableDispatchSystem : GameSystemBase
 			reason = "[1x] segment busy -> Hold eta=" + num2.ToString("F0");
 			return DepartureDecision.Hold;
 		}
-		// 阶段 2（2026-09-27，第三十二条（三）落地）：本线前车仍在区间前段（progress < 0.6）且
-		// 非即将到站 → 按住一个周期，避免发出即追尾（站外排队成因之一）。状态词复用
-		// SegmentBusy（"待避 · 前方区间占用"，即第三十四条候选措辞）。
+		// 阶段 2 公式化（国铁追踪间隔 I追，2026-09-27）：后车与前车离开**同一车站**的时间差
+		// ≥ I追（= MinHeadwayFrames）方可发出，即 CN 运行图"同方向追踪发车间隔"。
+		// 替代旧 progress<0.6 magic number——I追 随设置自适应，elapsed=now−前车 LegStartFrame；
+		// 前车起点未测到（=0）不判（第二十五条）。前车区间停车时 elapsed 照算，超窗后交原版闭塞兜底。
+		uint trackingHeadway = (uint)Math.Max(8f, s.MinHeadwayMinutes * fpm);
 		for (int j = 0; j < vehicleCount; j++)
 		{
 			Entity frontVehicle = vehicles[j].m_Vehicle;
@@ -970,20 +971,19 @@ public class TimetableDispatchSystem : GameSystemBase
 
 			VehicleSchedule frontSched;
 			if (!m_VehicleSchedule.TryGetValue(frontVehicle, out frontSched) || frontSched.AtStop
-				|| !frontSched.LegProgressValid || frontSched.LegProgress >= kFrontTrainProgressHold)
+				|| frontSched.LegStartFrame == 0u)
 			{
 				continue;
 			}
 
-			VehicleTooltipInfo frontSnap;
-			if (m_TooltipInfo.TryGetValue(frontVehicle, out frontSnap) && frontSnap.IsManaged
-				&& frontSnap.EtaFrames >= 0f && frontSnap.EtaFrames < (float)s.SafetyMarginFrames)
+			float elapsed = (float)(now - frontSched.LegStartFrame);
+			if (elapsed >= (float)trackingHeadway)
 			{
-				continue;   // 前车即将到站（ETA < 安全余量）→ 视作腾出
+				continue;
 			}
 
 			kind = VehicleStateKind.SegmentBusy;
-			reason = "[5] front train " + frontVehicle.Index + " progress=" + ((int)(frontSched.LegProgress * 100f)) + "% -> Hold";
+			reason = "[5] tracking headway: front train " + frontVehicle.Index + " departed " + elapsed.ToString("F0") + "f ago < I=" + trackingHeadway + "f -> Hold";
 			return DepartureDecision.Hold;
 		}
 		// 阶段 3 已移除（2026-09-27 实测无效）：PathTargets 数据源是站端车道，[7] 全场 0 触发；
@@ -1314,6 +1314,30 @@ public class TimetableDispatchSystem : GameSystemBase
 
 		float dwellMedian = m_SegmentTime.GetMedianDwell(line);
 		float roundTripMinutes = (legMedian + dwellMedian) * stops / fpm;
+		// 国铁补丁⑦ 旅行速度 v旅 = 圈内里程 / 圈时（含停站）——运行图编制的核心质量指标。
+		// 里程取各 RouteSegment PathInformation.m_Distance（世界单位）之和；时间换算成仿真秒
+		// （frames/60），再经 SpeedToKmh（世界尺度 1.8）对齐游戏速度表口径。
+		float totalDistance = 0f;
+		if (em.HasBuffer<RouteSegment>(line))
+		{
+			DynamicBuffer<RouteSegment> segments = em.GetBuffer<RouteSegment>(line, true);
+			int n = Math.Min(segments.Length, kMaxSegments2);
+			for (int i = 0; i < n; i++)
+			{
+				Entity segment = segments[i].m_Segment;
+				if (segment == Entity.Null || !em.Exists(segment) || !em.HasComponent<PathInformation>(segment))
+				{
+					continue;
+				}
+
+				float distance = em.GetComponentData<PathInformation>(segment).m_Distance;
+				if (distance > 0f)
+				{
+					totalDistance += distance;
+				}
+			}
+		}
+		float travelSpeedKmh = ((roundTripMinutes > 0.01f) ? UnitConversion.SpeedToKmh(totalDistance / (roundTripMinutes * fpm / 60f)) : 0f);
 		// 国铁补丁⑤（算法测算，2026-09-27）：运行图三要素——
 		//   需要车底数 = ⌈圈时 / 发车间隔⌉（N = T周/I）；通过能力 ≈ 60/I 对每小时；
 		//   现有车数取 RouteVehicle buffer 实长。图定间隔用原版 m_VehicleInterval（units→分钟）。
@@ -1337,7 +1361,8 @@ public class TimetableDispatchSystem : GameSystemBase
 			+ " segRef(min)=[" + string.Join(",", segRef) + "]"
 			+ " | fleet now=" + vehiclesNow + " need≈" + suggestedFleet.ToString("F0")
 			+ " interval=" + intervalMinutes.ToString("F1") + "min"
-			+ " capacity≈" + capacityPerHour.ToString("F1") + "/h");
+			+ " capacity≈" + capacityPerHour.ToString("F1") + "/h"
+			+ " v旅=" + travelSpeedKmh.ToString("F1") + "km/h");
 	}
 
 	private void ClearPerLoadState()
