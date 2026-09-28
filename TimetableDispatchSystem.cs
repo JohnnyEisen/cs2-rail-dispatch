@@ -1353,6 +1353,11 @@ public class TimetableDispatchSystem : GameSystemBase
 		}
 		float suggestedFleet = ((intervalMinutes > 0.01f) ? (float)Math.Ceiling(roundTripMinutes / intervalMinutes) : 0f);
 		float capacityPerHour = ((intervalMinutes > 0.01f) ? (60f / intervalMinutes) : 0f);
+		// 国铁测算补充（2026-09-27）：车辆不足时实际间隔 = 圈时/实有车数（原版车队由间隔推导，
+		// vanilla_interactions §2，"车少"只出现在买车间隙/坏车），此时实际间隔主导图定节奏——
+		// 通过能力按图定间隔算是理论上限，实际达不到。两个数并列输出，缺车一眼可见。
+		float actualIntervalMinutes = ((vehiclesNow > 0) ? (roundTripMinutes / vehiclesNow) : 0f);
+		float actualCapacityPerHour = ((actualIntervalMinutes > 0.01f) ? (60f / actualIntervalMinutes) : 0f);
 		ModLog.Info("[P8] timetable line=" + line.Index + " stops=" + stops
 			+ " legMedian=" + (legMedian / fpm).ToString("F1") + "min"
 			+ " dwellMedian=" + (dwellMedian / fpm).ToString("F1") + "min"
@@ -1362,6 +1367,7 @@ public class TimetableDispatchSystem : GameSystemBase
 			+ " | fleet now=" + vehiclesNow + " need≈" + suggestedFleet.ToString("F0")
 			+ " interval=" + intervalMinutes.ToString("F1") + "min"
 			+ " capacity≈" + capacityPerHour.ToString("F1") + "/h"
+			+ " actual≈" + actualIntervalMinutes.ToString("F1") + "min/" + actualCapacityPerHour.ToString("F1") + "per-h"
 			+ " v旅=" + travelSpeedKmh.ToString("F1") + "km/h");
 	}
 
