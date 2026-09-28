@@ -31,6 +31,20 @@ DMI：允许 88 km/h · 信号 通行 · 前车 #123 · 速度 142 km/h
 
 速度显示全部对齐游戏速度表口径（世界尺度系数 1.8，实测校准），单位 km/h。
 
+## 国铁调度惯例对齐
+
+本 Mod 的调度行为按中国铁路运行图编制与调整惯例实现，共七项：
+
+| # | 惯例 | 行为 | 类型 |
+|---|------|------|------|
+| ① | 严守图定 | 旅客列车不早于图定发车（"晚开不早开"）；提前发车默认关，需手动开 | 机制 |
+| ② | 晚点车优先 | 咽喉区错峰对晚点车豁免——晚点列车优先放行以恢复正点 | 机制 |
+| ③ | 正点率 | 离站晚点 ≤ 0.5 游戏分钟计正点，窗口/单线正点率可查 | 统计 |
+| ④ | 晚点恢复 = 压缩停站 | 晚点车的下一站计划停站按 50% 压缩，图定自然回落，晚点不无限传播 | 算法 |
+| ⑤ | 运行图三要素 | 需要车底数 N = ⌈圈时/间隔⌉、通过能力 ≈ 60/间隔、实际间隔 = 圈时/实有车数 | 公式 |
+| ⑥ | 同向追踪间隔 I追 | 后车与前车离开同一车站的时差 ≥ I追（= 最小发车间距设置）方可发出 | 公式 |
+| ⑦ | 旅行速度 v旅 | v旅 = 圈内里程 / 圈时（含停站），km/h 游戏口径 | 公式 |
+
 ## 设置（Main 标签，General / Timetable 两组）
 
 开关：
@@ -106,6 +120,19 @@ Patches/                    Harmony 补丁目录（当前无补丁，仅目录�
 UI/                         独立 UI 探针（webpack 构建，产物不进版本库）
 ```
 
+## 日志与诊断
+
+Beta 期反馈问题请附日志（`...\Logs\RailCapacityGuard.log`，在设置里打开 `EnableDiagnosticLogging` 才有 Verbose 行）。常用判据：
+
+| 指纹 | 含义 |
+|------|------|
+| `window: writes=… seen=… recorded=… onTime=… late=…` | 每 ~4 秒的调度健康总表：写入量、覆盖车辆数、快照写入量、正点/晚点 |
+| `[2x]` | 行驶中分流（发车决策不适用于区间车） |
+| `[1x] segment busy` / `[5] tracking headway` / `[3] zone … stagger` | 空间层三种按住：区间占用 / 追踪间隔 / 咽喉错峰 |
+| `dwell compression` / `late priority` | 晚点恢复生效（压缩停站 / 咽喉豁免） |
+| `[P8] timetable … need≈ … actual≈ … v旅=` | 每线基准测算（缺车看 need 与 now 差值） |
+| `[P3] zones=… seeds=…` / `[P4] applied …` | 咽喉分组重建 / 寻路代价应用 |
+
 ## 已知问题与注意
 
 - **速度口径**：CS2 世界单位速度 ≠ 物理 m/s——游戏速度表 km/h = `TrainNavigation.m_Speed × 1.8`（实测校准：游戏显示 160 km/h 时内部值为 88.9）。本 Mod 全部速度显示已走 `UnitConversion.SpeedToKmh` 统一换算。`Blocker.m_MaxSpeed` 的 byte 上限 255 在该口径下 ≈ 92 km/h，高速列车恒显示"允许：不限速"属正常。
@@ -113,7 +140,7 @@ UI/                         独立 UI 探针（webpack 构建，产物不进版�
 - **内存需求（载图期）**：载入城市时游戏会同时申请地形 / 纹理 / 批处理材质，地图类 Mod（例如解锁全图的 529 Tiles）会把峰值成倍放大。**16 GB 内存 + 大量 Mod** 的组合容易在载图进度条阶段耗尽虚拟内存，表现为长时间卡死，或 `Player.log` 里出现 `Could not allocate memory: System out of memory!`（通常紧接 `ManagedBatchSystem:CreateMaterial -> TextureAsset:LoadData` 栈，即原生分配失败）。
   - 排查：`Player.log` 搜 `Could not allocate memory`；事件查看器 → Windows 日志 → 系统 → 来源 `Microsoft-Windows-Resource-Exhaustion-Detector`（事件 2004）会列出占用虚拟内存最大的进程。
   - 缓解（按性价比）：关闭常驻内存大户 → 页面文件改为固定且足够大 → 关闭 / 减少地图类 Mod、降低纹理质量 → 加内存到 32 GB。
-- **未实现**：Harmony 补丁（`Patches/` 为空，`Lib.Harmony` 仅为预留引用）、Paradox Mods 发布流程、车队自适应写入。
+- **未实现**：Harmony 补丁（`Patches/` 为空，`Lib.Harmony` 仅为预留引用）、Paradox Mods 发布流程、车队自适应写入、图定基准表完整 UI 面板（当前为 tooltip 第 5 行摘要，完整面板需 C#→UI 绑定桥）、三段式牵引理论时分（测算候选，待世界秒→帧换算率实测校准）。
 
 ## 鸣谢
 
