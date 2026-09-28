@@ -23,8 +23,6 @@ public class TimetableDispatchSystem : GameSystemBase
 {
 	private const int MaxVehiclesPerLine = 32;
 
-	private const int kMaxSegments2 = 256;   // 旅行速度里程求和的段数上界
-
 	private const int MaxLinesPerTick = 64;
 
 	private const uint FleetPassInterval = 256u;
@@ -68,18 +66,7 @@ public class TimetableDispatchSystem : GameSystemBase
 
 	private uint m_LastZoneRebuild;
 
-	// 阶段 4 余项：zone 级最近放行记录。错峰窗 = kZoneStaggerFrames（2026-09-27 实测修正：
-	// 初版误用 MinHeadwayFrames=2 游戏分钟，咽喉穿越量级只有几游戏秒 → 53 次过度 Hold，
-	// 即"功能上线后说不上来的问题"的主因）。128 帧 ≈ 0.7 游戏分钟，一次穿越的量级。
-	private const float kZoneStaggerFrames = 128f;
-
-	// 国铁正点阈值：晚点 ≤ 0.5 游戏分钟（91 帧）仍算正点（近似"晚点 1 分钟内不计"的宽松口径）
-	private const float kPunctualFrames = 91f;
-
-	// 国铁晚点恢复——压缩停站系数：晚点车编图时停站按此比例压缩（图定自然回落实现"晚点吸收"，
-	// 否则链式图定 = 上一站实际 + 区间 + 停站 会把晚点永久传播）。0.5 = 半数停站时分用于恢复。
-	private const float kDwellCompression = 0.5f;
-
+	// 国铁对齐常量已归拢至 Runtime/CnRailwayTuning.cs（kZoneStaggerFrames/kPunctualFrames/kDwellCompression）
 	private int m_WindowOnTime;
 
 	private int m_WindowLate;
@@ -101,7 +88,6 @@ public class TimetableDispatchSystem : GameSystemBase
 
 	private readonly HashSet<Entity> m_TerminusLogged = new HashSet<Entity>();
 
-	private readonly HashSet<Entity> m_TimetableLogged = new HashSet<Entity>();   // P8：每线每会话导出一次
 
 	private readonly HashSet<Entity> m_SpeedProbeLogged = new HashSet<Entity>();   // P8：限速探针首次写入日志去重
 
@@ -519,13 +505,13 @@ public class TimetableDispatchSystem : GameSystemBase
 					uint num8 = ((value5.LastDepartFrame != 0) ? value5.LastDepartFrame : now);
 					value5.ScheduleUnknown = num7 < num6;
 					// 国铁补丁④（算法测算）：晚点恢复 = 压缩停站。上一段晚点的车，本站计划停站按
-					// kDwellCompression 压缩（下限 0.25 游戏分钟），图定随之上调回落——否则链式图定
+					// CnRailwayTuning.kDwellCompression 压缩（下限 0.25 游戏分钟），图定随之上调回落——否则链式图定
 					// （上一站实际 + 区间 + 停站）会把晚点永久传播、越积越深。实测放行仍由时刻表
 					// 锚定（Hold 至 planned），与"不早开"不冲突：planned 压缩后更早，是编图目标提前。
 					float dwellForPlan = value5.LastDwellFrames;
-					if (value5.LateFrames > kPunctualFrames && dwellForPlan > 0f)
+					if (value5.LateFrames > CnRailwayTuning.kPunctualFrames && dwellForPlan > 0f)
 					{
-						float compressed = Math.Max(0.25f * fpm, dwellForPlan * kDwellCompression);
+						float compressed = Math.Max(0.25f * fpm, dwellForPlan * CnRailwayTuning.kDwellCompression);
 						ModLog.Verbose("[P7] dwell compression vehicle=" + vehicle.Index + " late=" + value5.LateFrames.ToString("F0") + "f dwell " + dwellForPlan.ToString("F0") + "->" + compressed.ToString("F0"));
 						dwellForPlan = compressed;
 					}
@@ -548,7 +534,7 @@ public class TimetableDispatchSystem : GameSystemBase
 				if (value5.PlannedDepartFrame != 0u)
 				{
 					value5.LateFrames = (float)now - (float)value5.PlannedDepartFrame;
-					if (value5.LateFrames <= kPunctualFrames)
+					if (value5.LateFrames <= CnRailwayTuning.kPunctualFrames)
 					{
 						m_WindowOnTime++;
 					}
@@ -559,7 +545,7 @@ public class TimetableDispatchSystem : GameSystemBase
 					// 基准表正点率累积（tooltip 第 5 行数据源）
 					if (m_Baselines.TryGetValue(line, out var blForOnTime))
 					{
-						if (value5.LateFrames <= kPunctualFrames)
+						if (value5.LateFrames <= CnRailwayTuning.kPunctualFrames)
 						{
 							blForOnTime.OnTimeCount++;
 						}
@@ -1031,10 +1017,10 @@ public class TimetableDispatchSystem : GameSystemBase
 			// → 本车推迟（同线车不受限，线内节奏由 [1x]/[5]/slot 链管）。
 			uint zoneReleasedAt = 0u;
 			Entity zoneReleasedBy = Entity.Null;
-			bool wouldStagger = m_ZoneLastRelease.TryGetValue(zoneId, out zoneReleasedAt) && now - zoneReleasedAt < (uint)kZoneStaggerFrames
+			bool wouldStagger = m_ZoneLastRelease.TryGetValue(zoneId, out zoneReleasedAt) && now - zoneReleasedAt < (uint)CnRailwayTuning.kZoneStaggerFrames
 				&& m_ZoneLastLine.TryGetValue(zoneId, out zoneReleasedBy) && zoneReleasedBy != line;
 			// 国铁补丁②：晚点车优先恢复正点——本车晚点超过阈值时不受他线错峰窗限制
-			bool iAmLate = m_VehicleSchedule.TryGetValue(vehicle, out var mySched) && mySched.LateFrames > kPunctualFrames;
+			bool iAmLate = m_VehicleSchedule.TryGetValue(vehicle, out var mySched) && mySched.LateFrames > CnRailwayTuning.kPunctualFrames;
 			if (wouldStagger)
 			{
 				if (iAmLate)
@@ -1278,21 +1264,8 @@ public class TimetableDispatchSystem : GameSystemBase
 	}
 
 	/// <summary>
-	/// 图定基准表条目（P8，2026-09-27 起对玩家可见：列车 tooltip 第 5 行）。
-	/// ExportTimetable 每线每会话填充一次；正点率随离站结算持续累积。
+	/// 图定基准表条目结构体已归拢至 Runtime/LineBaseline.cs（tooltip 第 5 行与本测算共用）。
 	/// </summary>
-	public struct LineBaseline
-	{
-		public int Stops;
-		public float RoundTripMinutes;
-		public int VehiclesNow;
-		public float NeedFleet;
-		public float ActualIntervalMinutes;
-		public float TravelSpeedKmh;
-		public int OnTimeCount;
-		public int LateCount;
-	}
-
 	private readonly Dictionary<Entity, LineBaseline> m_Baselines = new Dictionary<Entity, LineBaseline>(64);
 
 	/// <summary>给 Tooltip 系统读的基准表快照（无数据返回 false——该线尚未被导出/统计过）。</summary>
@@ -1356,7 +1329,7 @@ public class TimetableDispatchSystem : GameSystemBase
 		if (em.HasBuffer<RouteSegment>(line))
 		{
 			DynamicBuffer<RouteSegment> segments = em.GetBuffer<RouteSegment>(line, true);
-			int n = Math.Min(segments.Length, kMaxSegments2);
+			int n = Math.Min(segments.Length, CnRailwayTuning.kMaxDistanceSegments);
 			for (int i = 0; i < n; i++)
 			{
 				Entity segment = segments[i].m_Segment;
@@ -1429,7 +1402,6 @@ public class TimetableDispatchSystem : GameSystemBase
 		m_TerminusLogged.Clear();
 		m_SegmentUnknownLogged.Clear();
 		m_UnknownBlockerHolds.Clear();
-		m_TimetableLogged.Clear();
 		m_SpeedProbeLogged.Clear();
 		m_ZoneLastRelease.Clear();
 		m_ZoneLastLine.Clear();
