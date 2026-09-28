@@ -13,11 +13,23 @@
 |------|------|------|------|
 | P0–P1 | `Mod.cs`、`Services/GameApiProbe.cs`、`RailTimebaseSystem.cs` | 骨架、反射 API 探测（缺成员即记录），帧 ↔ 游戏分钟换算 | 开 |
 | P2 | `Services/CapacityService.cs` | 站台容量判断：读站台轨道 `LaneReservation`，判断站台是否被占 | 开 |
-| P3 | `Services/ThroatZoneService.cs` | 咽喉区协调：把咽喉 lane 分组，`IsBusy` 只把**停驻**的挡路车算忙（移动中的顷刻腾出，不算） | 关 |
+| P3 | `Services/ThroatZoneService.cs` | 咽喉区协调：全网咽喉 lane 并查集分组（跨线路）；`IsBusy` 只把**停驻**的挡路车算忙（移动中的顷刻腾出，不算）；他线放行错峰（128 帧）；停驻挡路车是管理车辆且自身 ETA 剩余小于安全余量 → 即将腾出，不按住 | 关 |
 | P4 | `Services/PathfindCostService.cs` | 动态寻路代价：缩放 `Game.Prefabs.PathfindTrackData` 的 Comfort 维度（道岔 / 交叉 / 对向 / 急弯）。缓存原版值 → 应用 → 每 256 帧对账；读档、关开关、卸载均恢复原版值 | 关 |
 | P6-A | `TrainTooltipSystem.cs` | 列车 tooltip 第 4 行 DMI：允许速度（`Blocker.m_MaxSpeed`）、前方信号（`LaneSignal`）、挡路者、本车速度。悬浮时实时读，缺数据直接省略，不猜 | 开 |
-| P7 | `TimetableDispatchSystem.cs`、`Services/SegmentTimeService.cs` | 时刻表调度主体：发车帧写入（照搬 TT 语义）、Hold/Depart 决策、本段 ETA 与进度（`PathOwner.m_ElementIndex`）；区间时间三级回退（本车上一段实测 leg → 线路真实 leg 中位数 → 原版 `VehicleTiming.m_AverageTravelTime`）；单位（route units ÷60）与 `uint` 回绕护栏（`kMaxLegFrames = 262144` 帧 = 1 游戏日） | 开 |
-| P8 | 同上 | 基准时刻表导出（每线每会话一次，写段运行 / 停站中位数与循环时间估算）；限速探针（写 `Blocker.m_MaxSpeed`，`byte/5 = m/s`） | 关 |
+| P7 | `TimetableDispatchSystem.cs`、`Services/SegmentTimeService.cs` | 时刻表调度主体：发车帧写入（照搬 TT 语义）、Hold/Depart 决策、本段 ETA 与进度（`PathOwner.m_ElementIndex` + 陈旧 buffer 守卫）；区间时间四级回退（本车上一段实测 leg → 线路真实 leg 中位数 → 原版 `VehicleTiming.m_AverageTravelTime`（units÷60）→ RouteSegment 中位数）；uint 回绕护栏（`kMaxLegFrames = 262144` 帧 = 1 游戏日）；**国铁对齐**：严守图定不早开、晚点车咽喉优先、压缩停站晚点恢复、同向追踪间隔 I追、正点率 KPI | 开 |
+| P8 | 同上、`Runtime/LineBaseline.cs` | 运行图要素测算（每线每会话一次，写日志 + **列车 tooltip 第 5 行**）：圈时、需要车底数 ⌈圈时/间隔⌉ 与实际间隔并列、通过能力、旅行速度 v旅、正点率；限速探针（写 `Blocker.m_MaxSpeed`，`byte/5`） | 面板可见 / 导出关 / 探针关 |
+
+### 列车 tooltip（5 行）
+
+```
+图定发车：约 3.2 分钟后（08:45）   ← 站台侧状态；运行中则显示"下一站：预计 HH:MM"
+站间运行：12.4 分钟                ← 本段估计
+状态：上下客中 / 待避 · 前方站台占用 / 等待中 ·（原因）
+DMI：允许 88 km/h · 信号 通行 · 前车 #123 · 速度 142 km/h
+本线基准：圈时 42.3 分 · 需 5 车 / 现 3 · 正点 86% · v旅 96 km/h
+```
+
+速度显示全部对齐游戏速度表口径（世界尺度系数 1.8，实测校准），单位 km/h。
 
 ## 设置（Main 标签，General / Timetable 两组）
 
@@ -29,7 +41,7 @@
 | `EnableTimetableDispatch` | 开 | P7 主体开关 |
 | `EnableCapacityFeedback` | 开 | P2 站台容量反馈 |
 | `EnableThroatCoordination` | 关 | P3 咽喉区协调 |
-| `EnableEarlyDeparture` | 开 | 允许按运行时间比例提前发车 |
+| `EnableEarlyDeparture` | 关 | 按运行时间比例提前发车。默认关 = 国铁规则"旅客列车不早于图定发车"；需要高周转风格时手动开 |
 | `EnableClockMeasurement` | 关 | 时钟测量 |
 | `EnableTooltip` / `EnableDmiDisplay` | 开 / 开 | tooltip 与 DMI 第 4 行 |
 | `EnablePathfindCostScale` | 关 | P4 总开关（关闭时不写任何寻路数据） |
@@ -37,7 +49,7 @@
 | `EnableSpeedControlProbe` | 关 | P8 限速探针（接管管理车辆允许速度） |
 | `EnableFleetAdaptation` | **硬性关闭** | getter 恒返回 false：历史版本写出的车队值不可信，写入路径不再执行 |
 
-滑块：`PostponeStepFrames`(16)、`SafetyMarginFrames`(120)、`DiagnosticIntervalFrames`(4096)、`MaxHoldMinutes`(0=自动)、`MinHeadwayMinutes`(2)、`MaxEarlyPercent`(20)、`MaxBoardingMinutes`(180，卡住乘客的停站硬上限)、`PathfindSwitchCostScale` / `PathfindCurveCostScale`(1=原版)、`SpeedControlProbeKmh`(0=不写)。
+滑块：`PostponeStepFrames`(16)、`SafetyMarginFrames`(120)、`DiagnosticIntervalFrames`(4096)、`MaxHoldMinutes`(0=自动)、`MinHeadwayMinutes`(2，兼作同向追踪间隔 I追)、`MaxEarlyPercent`(20)、`MaxBoardingMinutes`(180，卡住乘客的停站硬上限)、`PathfindSwitchCostScale` / `PathfindCurveCostScale`(1=原版)、`SpeedControlProbeKmh`(0=不写)。
 
 ## 环境要求
 
@@ -96,6 +108,7 @@ UI/                         独立 UI 探针（webpack 构建，产物不进版�
 
 ## 已知问题与注意
 
+- **速度口径**：CS2 世界单位速度 ≠ 物理 m/s——游戏速度表 km/h = `TrainNavigation.m_Speed × 1.8`（实测校准：游戏显示 160 km/h 时内部值为 88.9）。本 Mod 全部速度显示已走 `UnitConversion.SpeedToKmh` 统一换算。`Blocker.m_MaxSpeed` 的 byte 上限 255 在该口径下 ≈ 92 km/h，高速列车恒显示"允许：不限速"属正常。
 - **写入面**：只有 P7 发车帧、P4 寻路代价（默认关）、P8 限速探针（默认关）会写原版数据；其余全为只读。`EnableFleetAdaptation` 硬性关闭。
 - **内存需求（载图期）**：载入城市时游戏会同时申请地形 / 纹理 / 批处理材质，地图类 Mod（例如解锁全图的 529 Tiles）会把峰值成倍放大。**16 GB 内存 + 大量 Mod** 的组合容易在载图进度条阶段耗尽虚拟内存，表现为长时间卡死，或 `Player.log` 里出现 `Could not allocate memory: System out of memory!`（通常紧接 `ManagedBatchSystem:CreateMaterial -> TextureAsset:LoadData` 栈，即原生分配失败）。
   - 排查：`Player.log` 搜 `Could not allocate memory`；事件查看器 → Windows 日志 → 系统 → 来源 `Microsoft-Windows-Resource-Exhaustion-Detector`（事件 2004）会列出占用虚拟内存最大的进程。
