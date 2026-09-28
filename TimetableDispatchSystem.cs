@@ -1103,11 +1103,6 @@ public class TimetableDispatchSystem : GameSystemBase
 		};
 	}
 
-	private void ClearTooltipInfo()
-	{
-		m_TooltipInfo.Clear();
-	}
-
 	private void LogDecisionOnce(Entity line, Entity vehicle, DepartureDecision decision, uint now, uint planned, uint target, string reason)
 	{
 		if (ModLog.VerboseEnabled)
@@ -1583,91 +1578,6 @@ public class TimetableDispatchSystem : GameSystemBase
 		return vehicle != Entity.Null && em.Exists(vehicle) && em.HasComponent<VehiclePublicTransport>(vehicle) && em.HasComponent<TrainCurrentLane>(vehicle);
 	}
 
-	private void RunFleetPass(EntityManager em, RailCapacityGuardSetting s, float fpm)
-	{
-		NativeArray<Entity> val = m_LineQuery.ToEntityArray(Allocator.Temp);
-		try
-		{
-			int num = Math.Min(val.Length, 64);
-			for (int i = 0; i < num; i++)
-			{
-				Entity val2 = val[i];
-				if (!m_States.TryGetValue(val2, out var value) || !em.HasBuffer<RouteVehicle>(val2) || !em.HasComponent<TransportLine>(val2))
-				{
-					continue;
-				}
-				TransportLine componentData = em.GetComponentData<TransportLine>(val2);
-				float intervalMinutes = ((componentData.m_VehicleInterval > 0.01f) ? componentData.m_VehicleInterval : 5f);
-				float loopMinutes = m_Fleet.GetLoopMinutes(em, val2, fpm);
-				if (loopMinutes <= 0.01f)
-				{
-					continue;
-				}
-				int num2 = FleetPolicyService.ComputeVanillaTargetCount(loopMinutes, intervalMinutes);
-				int length = em.GetBuffer<RouteVehicle>(val2, true).Length;
-				bool flag = value.EarlyCount >= 2 && length < num2;
-				bool flag2 = value.HoldCount >= 2 && length > num2;
-				value.EarlyCount = 0;
-				value.HoldCount = 0;
-				if (flag)
-				{
-					value.FleetUpStreak++;
-					value.FleetDownStreak = 0;
-				}
-				else if (flag2)
-				{
-					value.FleetDownStreak++;
-					value.FleetUpStreak = 0;
-				}
-				else
-				{
-					value.FleetUpStreak = 0;
-					value.FleetDownStreak = 0;
-				}
-				bool flag3 = value.FleetLastChangeFrame == 0 || m_Timebase.CurrentFrame - value.FleetLastChangeFrame >= 512;
-				int num3 = length;
-				if ((value.FleetUpStreak >= 2) & flag3)
-				{
-					num3 = length + 1;
-				}
-				else if ((value.FleetDownStreak >= 2) & flag3)
-				{
-					num3 = length - 1;
-				}
-				if (num3 < 1)
-				{
-					num3 = 1;
-				}
-				if (num3 != length)
-				{
-					float defaultIntervalMinutes = 5f;
-					if (em.HasComponent<PrefabRef>(val2))
-					{
-						Entity prefab = em.GetComponentData<PrefabRef>(val2).m_Prefab;
-						if (prefab != Entity.Null && em.Exists(prefab) && em.HasComponent<TransportLineData>(prefab))
-						{
-							defaultIntervalMinutes = em.GetComponentData<TransportLineData>(prefab).m_DefaultVehicleInterval;
-						}
-					}
-					if (m_Fleet.TrySetFleet(em, val2, num3, defaultIntervalMinutes, loopMinutes, out var _, out var reason))
-					{
-						value.FleetLastChangeFrame = m_Timebase.CurrentFrame;
-						value.FleetUpStreak = 0;
-						value.FleetDownStreak = 0;
-					}
-					else
-					{
-						ModLog.Verbose("[Fleet] skip line " + val2.Index + ": " + reason);
-					}
-				}
-				m_States[val2] = value;
-			}
-		}
-		finally
-		{
-			val.Dispose();
-		}
-	}
 
 	protected override void OnDestroy()
 	{
