@@ -10,3 +10,5 @@ UI/dist/
 
 # 本机路径（游戏 Managed 目录 / Mod 部署目录），模板见 Directory.Build.props.example
 Directory.Build.props
+# focus-guard 履职审计日志（含本机工作区路径，禁止入库）
+.focus-guard/
