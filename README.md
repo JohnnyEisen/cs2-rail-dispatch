@@ -153,5 +153,5 @@ Beta 期反馈问题请附日志（`...\Logs\RailCapacityGuard.log`，在设置�
 
 ## 许可证
 
-- 本仓库代码：MIT，见 [`LICENSE`](LICENSE)（Copyright (c) 2026 JohnnyEisen）
+- 本仓库代码：MIT，见 [`LICENSE`](LICENSE)（Copyright (c) 2026 irisblackwood）
 - 第三方：TransitTimetables 的 MIT 许可与版权声明保留在 [`LICENSE-TRANSITTIMETABLES.txt`](LICENSE-TRANSITTIMETABLES.txt)（Copyright (c) 2026 AmicusDeus）
